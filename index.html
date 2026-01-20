@@ -11,12 +11,10 @@
     
     <script>
         /**
-         * URL DE IMPLEMENTACIÓN ACTUALIZADA
-         * Se ha actualizado a la versión con restricciones de usuario:
-         * ...jEMIox08QVhVZ/exec
+         * CONFIGURACIÓN DE CONEXIÓN
          */
-        const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzA1b7RA3dSVIQdBsUTWw8n9bFRr7wNul9-RJK_REHSDRKt18xAkY-jEMIox08QVhVZ/exec';
-        let API_URL = DEFAULT_API_URL;
+        const API_URL = 'https://script.google.com/macros/s/AKfycbzA1b7RA3dSVIQdBsUTWw8n9bFRr7wNul9-RJK_REHSDRKt18xAkY-jEMIox08QVhVZ/exec';
+        const SECURITY_TOKEN = 'r22.'; // CLAVE ACTUALIZADA
         
         let emitters = [], recipients = [], patients = [], services = [], savedReceipts = [];
         let receiptItems = [], nextReceiptNumber = 1, editingReceiptId = null;
@@ -30,41 +28,36 @@
             setTimeout(() => { container.style.opacity = '0'; }, 3000);
         }
 
-        /**
-         * Carga de datos con manejo de redirección de Google
-         */
         async function fetchAllData() {
             const loader = document.getElementById('global-loader');
             if (loader) loader.classList.remove('hidden');
             
             try {
-                // Añadimos un timestamp para evitar caché
-                const response = await fetch(`${API_URL}?action=getAll&t=${Date.now()}`, {
+                const url = `${API_URL}?action=getAll&token=${encodeURIComponent(SECURITY_TOKEN)}&t=${Date.now()}`;
+                const response = await fetch(url, {
                     method: 'GET',
                     mode: 'cors',
                     redirect: 'follow'
                 });
                 
-                if (!response.ok) throw new Error("Error en la respuesta del servidor");
-                
+                if (!response.ok) throw new Error("Error de red");
+
                 const result = await response.json();
                 
                 if (result && result.status === 'success') {
                     const d = result.data;
-                    
-                    // Normalización de datos
-                    emitters = d.Emisores || d.emisores || [];
-                    recipients = d.Receptores || d.receptores || [];
-                    patients = (d.Pacientes || d.pacientes || []).map(p => ({
+                    emitters = d.Emisores || [];
+                    recipients = d.Receptores || [];
+                    patients = (d.Pacientes || []).map(p => ({
                         ...p,
                         displayName: `${p.nombre || ''} ${p.apellido || ''}`.trim(),
                         cedula: p.cedula || p.ci || ""
                     })).sort((a, b) => a.displayName.localeCompare(b.displayName));
                     
-                    services = d.Servicios || d.servicios || [];
-                    savedReceipts = d.RecibosGuardados || d.recibosguardados || [];
+                    services = d.Servicios || [];
+                    savedReceipts = d.RecibosGuardados || [];
                     
-                    const config = d.Configuracion || d.configuracion || [];
+                    const config = d.Configuracion || [];
                     const corr = config.find(c => (c.clave || '').toLowerCase() === 'correlativo');
                     nextReceiptNumber = corr ? parseInt(corr.valor) : 1;
                     
@@ -74,12 +67,12 @@
                     updateReceiptNumberDisplay();
                     if (loader) loader.classList.add('hidden');
                 } else {
-                    throw new Error(result.message || "Error desconocido");
+                    throw new Error(result.message || "Acceso denegado");
                 }
             } catch (e) { 
-                console.error("Error al cargar datos:", e);
+                console.error("Error conexión:", e);
                 if (loader) loader.classList.add('hidden');
-                showMessage("Error de conexión. Verifique permisos del Script.", true);
+                showMessage("Error: Token incorrecto o fallo de conexión", true);
             }
         }
 
@@ -131,7 +124,7 @@
             const service = services.find(s => String(s.id) === String(sId));
             const patient = patients.find(p => p.displayName === pSearch);
             
-            if (!service || !patient || !date) return showMessage("Complete todos los campos del servicio.", true);
+            if (!service || !patient || !date) return showMessage("Complete los datos.", true);
             
             receiptItems.push({
                 ...service,
@@ -152,7 +145,7 @@
             let total = 0;
             list.innerHTML = receiptItems.map(item => {
                 total += item.precioTotalLinea;
-                return `<li class="bg-white p-4 rounded-2xl mb-3 flex justify-between items-center text-xs shadow-sm border border-slate-50 animate-fade-in">
+                return `<li class="bg-white p-4 rounded-2xl mb-3 flex justify-between items-center text-xs shadow-sm border border-slate-50">
                     <div>
                         <b class="text-slate-800">${item.date}</b> - ${item.descripcion}<br>
                         <span class="text-slate-400 font-medium">${item.beneficiario}</span>
@@ -196,34 +189,23 @@
             };
 
             try {
-                showMessage("Procesando...");
+                showMessage("Guardando...");
                 await fetch(API_URL, {
                     method: 'POST',
                     mode: 'no-cors',
                     body: JSON.stringify({ 
                         action: editingReceiptId ? 'update' : 'create', 
                         collection: 'RecibosGuardados', 
+                        token: SECURITY_TOKEN,
                         payload 
                     })
                 });
 
-                if (!editingReceiptId && (emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true")) {
-                    await fetch(API_URL, {
-                        method: 'POST',
-                        mode: 'no-cors',
-                        body: JSON.stringify({ 
-                            action: 'update', 
-                            collection: 'Configuracion', 
-                            payload: { clave: 'correlativo', valor: (nextReceiptNumber + 1).toString() }
-                        })
-                    });
-                }
-
                 setTimeout(() => {
                     cancelEdit();
                     fetchAllData();
-                    showMessage("Recibo guardado.");
-                }, 1000);
+                    showMessage("Recibo guardado exitosamente.");
+                }, 1500);
             } catch (e) { 
                 showMessage("Error al guardar.", true); 
             }
@@ -292,7 +274,6 @@
     </style>
 </head>
 <body class="p-4 sm:p-6 min-h-screen text-slate-800">
-    <!-- Cargador Global -->
     <div id="global-loader" class="fixed inset-0 bg-slate-900/10 backdrop-blur-sm z-[200] flex items-center justify-center hidden">
         <div class="bg-white p-6 rounded-[2rem] shadow-2xl flex items-center gap-4">
             <div class="flex gap-1">
@@ -337,7 +318,6 @@
 
         <!-- Main Content -->
         <div class="lg:col-span-9 bg-white rounded-[3rem] shadow-sm border border-white min-h-[85vh] overflow-hidden flex flex-col">
-            <!-- Tab: Nuevo Recibo -->
             <div id="tab-recibos" class="tab-content p-6 sm:p-12 space-y-10 flex-1">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div class="space-y-2">
@@ -365,11 +345,11 @@
                         <div class="flex gap-4">
                             <div class="flex-1 space-y-2">
                                 <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Fecha Atención</label>
-                                <input type="date" id="service-date" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-xs font-semibold outline-none shadow-sm">
+                                <input type="date" id="service-date" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-xs font-semibold outline-none">
                             </div>
                             <div class="w-24 space-y-2">
                                 <label class="text-[10px] font-bold text-indigo-400 uppercase text-center block">Cant.</label>
-                                <input type="number" id="service-qty" value="1" min="1" class="w-full p-4 rounded-full bg-white border border-indigo-100 font-bold text-center text-sm text-indigo-600 outline-none shadow-sm">
+                                <input type="number" id="service-qty" value="1" min="1" class="w-full p-4 rounded-full bg-white border border-indigo-100 font-bold text-center text-sm text-indigo-600 outline-none">
                             </div>
                         </div>
 
@@ -401,12 +381,10 @@
                 </div>
             </div>
 
-            <!-- Tab: Historial -->
             <div id="tab-historial" class="tab-content hidden p-10 flex-1">
                 <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
 
-            <!-- Tab: Servicios -->
             <div id="tab-datos" class="tab-content hidden p-10 flex-1">
                 <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
