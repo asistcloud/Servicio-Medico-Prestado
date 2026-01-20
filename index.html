@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedCloud - Gestión Médica Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    
+    <script>
+        // ¡IMPORTANTE! Actualiza esta URL cada vez que hagas una "Nueva Implementación"
+        const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzVw2xkOEIThkG14NHgXorHQeCZrKPpiJI4Ujf_1Bq1TpEntoLx5kFiT_M8MqQjJO49/exec';
+        let API_URL = localStorage.getItem('medical_app_sheet_url') || DEFAULT_API_URL;
+        
+        let emitters = [], recipients = [], patients = [], services = [], savedReceipts = [];
+        let receiptItems = [], nextReceiptNumber = 1, editingReceiptId = null;
+
+        function showMessage(msg, isError = false) {
+            const container = document.getElementById('message-container');
+            if (!container) return;
+            container.textContent = msg;
+            container.className = `fixed top-6 right-6 p-4 rounded-2xl shadow-2xl z-[100] transition-all duration-500 font-bold ${isError ? 'bg-rose-500 text-white' : 'bg-emerald-500 text-white'}`;
+            container.style.opacity = '1';
+            setTimeout(() => { container.style.opacity = '0'; }, 3000);
+        }
+
+        async function fetchAllData() {
+            if (!API_URL) return;
+            try {
+                // Se agrega redireccionamiento manual si falla el fetch automático por CORS
+                const response = await fetch(`${API_URL}?action=getAll`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+                
+                if (!response.ok) throw new Error("Error en respuesta del servidor");
+                
+                const result = await response.json();
+                
+                if (result && result.status === 'success') {
+                    const d = result.data;
+                    emitters = d.Emisores || [];
+                    recipients = d.Receptores || [];
+                    patients = (d.Pacientes || []).map(p => ({
+                        ...p,
+                        displayName: `${p.nombre || ''} ${p.apellido || ''}`.trim(),
+                        cedula: p.cedula || p.ci || ""
+                    })).sort((a, b) => a.displayName.localeCompare(b.displayName));
+                    services = d.Servicios || [];
+                    savedReceipts = d.RecibosGuardados || [];
+                    const config = d.Configuracion || [];
+                    const corr = config.find(c => (c.clave || '').toLowerCase() === 'correlativo');
+                    nextReceiptNumber = corr ? parseInt(corr.valor) : 1;
+                    
+                    updateDropdowns();
+                    renderManagementLists();
+                    renderHistory();
+                    updateReceiptNumberDisplay();
+                } else if (result.status === 'error' && result.message === 'Acceso Denegado') {
+                    document.body.innerHTML = `
+                        <div class="h-screen w-screen flex flex-col items-center justify-center bg-slate-50 p-10 text-center">
+                            <i class="fas fa-user-lock text-6xl text-rose-500 mb-6"></i>
+                            <h1 class="text-3xl font-black text-slate-900 mb-2">Usuario no Autorizado</h1>
+                            <p class="text-slate-500 max-w-md mb-6">Esta aplicación es exclusiva para <b>contadoraisacarolina@gmail.com</b>. Tu sesión actual (${result.debug_user}) no tiene acceso.</p>
+                            <button onclick="location.reload()" class="bg-indigo-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">Reintentar Acceso</button>
+                        </div>`;
+                }
+            } catch (e) { 
+                console.error("Error cargando datos:", e); 
+                showMessage("Error: No se pudo conectar con el script de Google.", true);
+            }
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('bg-indigo-600', 'text-white', 'shadow-xl');
+                btn.classList.add('text-slate-500');
+            });
+            document.getElementById(`btn-${tab}`).classList.add('bg-indigo-600', 'text-white', 'shadow-xl');
+        }
+
+        function updateReceiptNumberDisplay() {
+            const eId = document.getElementById('emitter-select').value;
+            const emisor = emitters.find(e => String(e.id) === String(eId));
+            const display = document.getElementById('receipt-number-display');
+            if (editingReceiptId) {
+                const r = savedReceipts.find(r => r.id === editingReceiptId);
+                display.textContent = r ? r.numerorecibo : "---";
+            } else {
+                display.textContent = (emisor && emisor.usarcorrelativo) ? nextReceiptNumber.toString().padStart(5, '0') : "S/N";
+            }
+        }
+
+        function updateDropdowns() {
+            const fill = (id, list, key) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.innerHTML = `<option value="">Seleccionar...</option>` + list.map(i => `<option value="${i.id}">${i[key] || i.nombre}</option>`).join('');
+            };
+            fill('emitter-select', emitters, 'nombre');
+            fill('recipient-select', recipients, 'nombre');
+            fill('service-select', services, 'descripcion');
+            document.getElementById('patients-list').innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
+        }
+
+        function addServiceToReceipt(e) {
+            e.preventDefault();
+            const sId = document.getElementById('service-select').value;
+            const pSearch = document.getElementById('patient-search').value;
+            const date = document.getElementById('service-date').value;
+            const qty = parseInt(document.getElementById('service-qty').value) || 1;
+            const service = services.find(s => String(s.id) === String(sId));
+            const patient = patients.find(p => p.displayName === pSearch);
+            
+            if (!service || !patient || !date) return showMessage("Faltan datos", true);
+            
+            receiptItems.push({
+                ...service,
+                beneficiario: patient.displayName,
+                cedula: patient.cedula,
+                date: date.split('-').reverse().join('-'),
+                dateISO: date,
+                quantity: qty,
+                precioTotalLinea: (parseFloat(service.precio) || 0) * qty,
+                tempId: Date.now()
+            });
+            receiptItems.sort((a,b) => new Date(a.dateISO) - new Date(b.dateISO));
+            renderReceiptItems();
+        }
+
+        function renderReceiptItems() {
+            const list = document.getElementById('receipt-items-list');
+            let total = 0;
+            list.innerHTML = receiptItems.map(item => {
+                total += item.precioTotalLinea;
+                return `<li class="bg-white p-3 rounded-2xl mb-2 flex justify-between items-center text-xs shadow-sm border border-slate-50">
+                    <div><b>${item.date}</b> - ${item.descripcion}<br><span class="text-slate-400">${item.beneficiario}</span></div>
+                    <div class="text-right">
+                        <div class="font-bold text-indigo-600">$${item.precioTotalLinea.toFixed(2)}</div>
+                        <button onclick="removeItem(${item.tempId})" class="text-rose-400"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                </li>`;
+            }).join('');
+            document.getElementById('total-usd').textContent = total.toFixed(2);
+            const rate = parseFloat(document.getElementById('bcv-rate').value) || 0;
+            document.getElementById('total-bs').textContent = (total * rate).toLocaleString('es-VE', {minimumFractionDigits:2});
+        }
+
+        function removeItem(id) { receiptItems = receiptItems.filter(i => i.tempId !== id); renderReceiptItems(); }
+
+        async function processReceipt() {
+            if (receiptItems.length === 0) return showMessage("Recibo vacío", true);
+            const emisor = emitters.find(e => String(e.id) === document.getElementById('emitter-select').value);
+            const receptor = recipients.find(r => String(r.id) === document.getElementById('recipient-select').value);
+            const totalUSD = parseFloat(document.getElementById('total-usd').textContent);
+            const rate = parseFloat(document.getElementById('bcv-rate').value) || 0;
+
+            const payload = {
+                id: editingReceiptId || 'REC-' + Date.now(),
+                fecha_creacion: new Date().toISOString(),
+                fecharecibo: document.getElementById('issue-date').value.split('-').reverse().join('/'),
+                numerorecibo: editingReceiptId ? savedReceipts.find(r => r.id === editingReceiptId).numerorecibo : 
+                             (emisor.usarcorrelativo ? nextReceiptNumber : "S/N"),
+                nombreemisor: emisor.nombre,
+                nombrereceptor: receptor.nombre,
+                totalusd: totalUSD,
+                totalbs: totalUSD * rate,
+                jsoncompleto: JSON.stringify({ emisor, receptor, items: receiptItems, totalUSD, rate })
+            };
+
+            try {
+                showMessage("Guardando...");
+                // Usamos POST con redirección manual para evitar problemas de CORS
+                await fetch(API_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', // Importante para Google Apps Script POST
+                    body: JSON.stringify({ action: editingReceiptId ? 'update' : 'create', collection: 'RecibosGuardados', payload })
+                });
+
+                if (!editingReceiptId && emisor.usarcorrelativo) {
+                    await fetch(API_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        body: JSON.stringify({ action: 'update', collection: 'Configuracion', payload: { clave: 'correlativo', valor: (nextReceiptNumber + 1).toString() }})
+                    });
+                }
+
+                setTimeout(() => {
+                    cancelEdit();
+                    fetchAllData();
+                    showMessage("Guardado exitoso");
+                }, 1500);
+            } catch (e) { showMessage("Error de conexión", true); }
+        }
+
+        function formatHistoryDate(dateStr) {
+            if (!dateStr) return "S/F";
+            const d = new Date(dateStr);
+            if (isNaN(d)) return dateStr;
+            const h = d.getHours();
+            return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(-2)} ${h % 12 || 12}:${String(d.getMinutes()).padStart(2,'0')}${h >= 12 ? 'pm' : 'am'}`;
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            const sorted = [...savedReceipts].sort((a,b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion));
+            list.innerHTML = sorted.map(r => `
+                <div class="p-4 bg-white border rounded-3xl mb-3 flex justify-between items-center shadow-sm">
+                    <div>
+                        <b class="text-sm">Recibo ${r.numerorecibo}</b><br>
+                        <small class="text-slate-400 font-bold">${formatHistoryDate(r.fecha_creacion)}</small>
+                        <p class="text-[11px] text-slate-500 truncate">${r.nombrereceptor}</p>
+                    </div>
+                    <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-9 w-9 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center"><i class="fas fa-edit text-xs"></i></button>
+                </div>`).join('');
+        }
+
+        function loadReceiptForEdit(r) {
+            const data = JSON.parse(r.jsoncompleto);
+            document.getElementById('emitter-select').value = data.emisor.id;
+            document.getElementById('recipient-select').value = data.receptor.id;
+            document.getElementById('bcv-rate').value = data.rate || "";
+            receiptItems = data.items.map(i => ({ ...i, tempId: Date.now() + Math.random() }));
+            editingReceiptId = r.id;
+            document.getElementById('receipt-action-title').textContent = "Editando Recibo";
+            document.getElementById('cancel-edit-btn').classList.remove('hidden');
+            renderReceiptItems();
+            switchTab('recibos');
+        }
+
+        function cancelEdit() {
+            editingReceiptId = null; receiptItems = [];
+            document.getElementById('receipt-action-title').textContent = "Nuevo Recibo";
+            document.getElementById('cancel-edit-btn').classList.add('hidden');
+            renderReceiptItems();
+        }
+
+        function renderManagementLists() {
+            document.getElementById('list-s').innerHTML = services.map(s => `
+                <div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border shadow-sm">
+                    <span class="text-xs font-bold">${s.descripcion}</span>
+                    <span class="text-indigo-600 font-bold text-xs">$${parseFloat(s.precio).toFixed(2)}</span>
+                </div>`).join('');
+        }
+
+        window.onload = () => { 
+            fetchAllData(); 
+            document.getElementById('service-date').valueAsDate = new Date(); 
+            document.getElementById('issue-date').valueAsDate = new Date(); 
+            document.getElementById('emitter-select').addEventListener('change', updateReceiptNumberDisplay);
+        };
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
+        .tab-content { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="p-4 sm:p-6 min-h-screen">
+    <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300"></div>
+    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-3 space-y-6">
+            <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-white">
+                <h1 class="text-xl font-extrabold mb-8 text-slate-900">MED<span class="text-indigo-600">CLOUD</span></h1>
+                <nav class="space-y-2">
+                    <button id="btn-recibos" onclick="switchTab('recibos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold bg-indigo-600 text-white flex items-center gap-3 transition-all"><i class="fas fa-plus"></i> <span id="receipt-action-title">Nuevo Recibo</span></button>
+                    <button id="btn-historial" onclick="switchTab('historial')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold text-slate-500 hover:bg-slate-50 flex items-center gap-3 transition-all"><i class="fas fa-history"></i> Historial</button>
+                    <button id="btn-datos" onclick="switchTab('datos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold text-slate-500 hover:bg-slate-50 flex items-center gap-3 transition-all"><i class="fas fa-list"></i> Servicios</button>
+                </nav>
+                <button id="cancel-edit-btn" onclick="cancelEdit()" class="hidden w-full mt-4 p-4 rounded-full text-left text-sm font-bold bg-rose-50 text-rose-500 border border-rose-100 flex items-center gap-3"><i class="fas fa-times"></i> Cancelar Edición</button>
+            </div>
+            <div class="bg-slate-900 p-6 rounded-[2.5rem] text-white">
+                <label class="text-[10px] font-black text-slate-400 block mb-2 uppercase tracking-widest">Tasa BCV</label>
+                <input type="number" id="bcv-rate" step="any" oninput="renderReceiptItems()" class="w-full bg-slate-800 p-4 rounded-2xl text-emerald-400 font-bold text-2xl outline-none border border-slate-700">
+            </div>
+            <div class="bg-white p-6 rounded-[2.5rem] text-center border shadow-sm">
+                <small class="text-slate-400 font-bold uppercase text-[10px] block mb-1">Correlativo</small>
+                <div class="text-2xl font-black text-indigo-950" id="receipt-number-display">00000</div>
+            </div>
+        </div>
+        <div class="lg:col-span-9 bg-white rounded-[2.5rem] shadow-sm border border-white min-h-[80vh] overflow-hidden flex flex-col">
+            <div id="tab-recibos" class="tab-content p-6 sm:p-10 space-y-8 flex-1">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <select id="emitter-select" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none"></select>
+                    <select id="recipient-select" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none"></select>
+                    <input type="date" id="issue-date" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none">
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                    <div class="lg:col-span-5 bg-indigo-50/50 p-6 rounded-[2rem] space-y-4">
+                        <input type="text" id="patient-search" list="patients-list" placeholder="🔍 Paciente" class="w-full p-4 rounded-full bg-white text-sm outline-none shadow-sm">
+                        <datalist id="patients-list"></datalist>
+                        <div class="flex gap-2">
+                            <input type="date" id="service-date" class="w-full p-4 rounded-full bg-white text-xs outline-none shadow-sm">
+                            <input type="number" id="service-qty" value="1" min="1" class="w-20 p-4 rounded-full bg-white font-bold text-center text-sm outline-none shadow-sm">
+                        </div>
+                        <select id="service-select" class="w-full p-4 rounded-full bg-white text-sm outline-none shadow-sm"></select>
+                        <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-4 rounded-full font-bold text-xs uppercase tracking-widest">Agregar Servicio</button>
+                    </div>
+                    <div class="lg:col-span-7 flex flex-col">
+                        <div class="flex items-center gap-4 mb-6">
+                            <div class="text-4xl font-black">$<span id="total-usd">0.00</span></div>
+                            <div class="bg-emerald-100 text-emerald-600 px-4 py-1 rounded-full text-[10px] font-black">Bs. <span id="total-bs">0,00</span></div>
+                        </div>
+                        <div class="flex-1 min-h-[250px] bg-slate-50/50 rounded-[2rem] p-4 mb-4 overflow-y-auto"><ul id="receipt-items-list"></ul></div>
+                        <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-5 rounded-full font-black shadow-lg uppercase tracking-widest text-sm">Generar Recibo</button>
+                    </div>
+                </div>
+            </div>
+            <div id="tab-historial" class="tab-content hidden p-6 sm:p-10 space-y-6 flex-1"><div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div></div>
+            <div id="tab-datos" class="tab-content hidden p-6 sm:p-10 space-y-6 flex-1"><div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div></div>
+        </div>
+    </div>
+</body>
+</html>
