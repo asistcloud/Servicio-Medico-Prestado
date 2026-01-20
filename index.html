@@ -10,7 +10,12 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
     
     <script>
-        // ¡IMPORTANTE! Actualiza esta URL cada vez que hagas una "Nueva Implementación"
+        /**
+         * URL de la API de Google Apps Script.
+         * IMPORTANTE: Asegúrate de que el Script esté publicado como:
+         * 1. Ejecutar como: El usuario que accede a la aplicación web (o "Yo" dependiendo de tu flujo).
+         * 2. Quién tiene acceso: Cualquier persona con una cuenta de Google.
+         */
         const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzA1b7RA3dSVIQdBsUTWw8n9bFRr7wNul9-RJK_REHSDRKt18xAkY-jEMIox08QVhVZ/exec';
         let API_URL = localStorage.getItem('medical_app_sheet_url') || DEFAULT_API_URL;
         
@@ -26,31 +31,36 @@
             setTimeout(() => { container.style.opacity = '0'; }, 3000);
         }
 
+        /**
+         * Carga todos los datos desde el Script de Google.
+         */
         async function fetchAllData() {
             if (!API_URL) return;
             try {
-                // Se agrega redireccionamiento manual si falla el fetch automático por CORS
+                // Se utiliza una petición simple para evitar conflictos de CORS pre-flight
                 const response = await fetch(`${API_URL}?action=getAll`, {
-                    method: 'GET',
-                    headers: { 'Accept': 'application/json' }
+                    method: 'GET'
                 });
                 
-                if (!response.ok) throw new Error("Error en respuesta del servidor");
+                if (!response.ok) throw new Error("No se pudo obtener respuesta del servidor.");
                 
                 const result = await response.json();
                 
                 if (result && result.status === 'success') {
                     const d = result.data;
-                    emitters = d.Emisores || [];
-                    recipients = d.Receptores || [];
-                    patients = (d.Pacientes || []).map(p => ({
+                    // Mapeo de datos con fallback para evitar errores de undefined
+                    emitters = d.Emisores || d.emisores || [];
+                    recipients = d.Receptores || d.receptores || [];
+                    patients = (d.Pacientes || d.pacientes || []).map(p => ({
                         ...p,
                         displayName: `${p.nombre || ''} ${p.apellido || ''}`.trim(),
                         cedula: p.cedula || p.ci || ""
                     })).sort((a, b) => a.displayName.localeCompare(b.displayName));
-                    services = d.Servicios || [];
-                    savedReceipts = d.RecibosGuardados || [];
-                    const config = d.Configuracion || [];
+                    
+                    services = d.Servicios || d.servicios || [];
+                    savedReceipts = d.RecibosGuardados || d.recibosguardados || [];
+                    
+                    const config = d.Configuracion || d.configuracion || [];
                     const corr = config.find(c => (c.clave || '').toLowerCase() === 'correlativo');
                     nextReceiptNumber = corr ? parseInt(corr.valor) : 1;
                     
@@ -58,29 +68,32 @@
                     renderManagementLists();
                     renderHistory();
                     updateReceiptNumberDisplay();
-                } else if (result.status === 'error' && result.message === 'Acceso Denegado') {
+                } else if (result.status === 'error' && result.message.includes('Acceso Denegado')) {
                     document.body.innerHTML = `
                         <div class="h-screen w-screen flex flex-col items-center justify-center bg-slate-50 p-10 text-center">
                             <i class="fas fa-user-lock text-6xl text-rose-500 mb-6"></i>
                             <h1 class="text-3xl font-black text-slate-900 mb-2">Usuario no Autorizado</h1>
-                            <p class="text-slate-500 max-w-md mb-6">Esta aplicación es exclusiva para <b>contadoraisacarolina@gmail.com</b>. Tu sesión actual (${result.debug_user}) no tiene acceso.</p>
+                            <p class="text-slate-500 max-w-md mb-6">Esta aplicación está restringida. Debes iniciar sesión con la cuenta de Google autorizada.</p>
                             <button onclick="location.reload()" class="bg-indigo-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">Reintentar Acceso</button>
                         </div>`;
                 }
             } catch (e) { 
-                console.error("Error cargando datos:", e); 
-                showMessage("Error: No se pudo conectar con el script de Google.", true);
+                console.error("Error en fetchAllData:", e); 
+                showMessage("Error de conexión: No se pudo cargar la base de datos.", true);
             }
         }
 
         function switchTab(tab) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+            const target = document.getElementById(`tab-${tab}`);
+            if (target) target.classList.remove('hidden');
+            
             document.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.classList.remove('bg-indigo-600', 'text-white', 'shadow-xl');
                 btn.classList.add('text-slate-500');
             });
-            document.getElementById(`btn-${tab}`).classList.add('bg-indigo-600', 'text-white', 'shadow-xl');
+            const activeBtn = document.getElementById(`btn-${tab}`);
+            if (activeBtn) activeBtn.classList.add('bg-indigo-600', 'text-white', 'shadow-xl');
         }
 
         function updateReceiptNumberDisplay() {
@@ -91,7 +104,7 @@
                 const r = savedReceipts.find(r => r.id === editingReceiptId);
                 display.textContent = r ? r.numerorecibo : "---";
             } else {
-                display.textContent = (emisor && emisor.usarcorrelativo) ? nextReceiptNumber.toString().padStart(5, '0') : "S/N";
+                display.textContent = (emisor && (emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true")) ? nextReceiptNumber.toString().padStart(5, '0') : "S/N";
             }
         }
 
@@ -104,7 +117,8 @@
             fill('emitter-select', emitters, 'nombre');
             fill('recipient-select', recipients, 'nombre');
             fill('service-select', services, 'descripcion');
-            document.getElementById('patients-list').innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
+            const dl = document.getElementById('patients-list');
+            if (dl) dl.innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
         }
 
         function addServiceToReceipt(e) {
@@ -113,10 +127,11 @@
             const pSearch = document.getElementById('patient-search').value;
             const date = document.getElementById('service-date').value;
             const qty = parseInt(document.getElementById('service-qty').value) || 1;
+            
             const service = services.find(s => String(s.id) === String(sId));
             const patient = patients.find(p => p.displayName === pSearch);
             
-            if (!service || !patient || !date) return showMessage("Faltan datos", true);
+            if (!service || !patient || !date) return showMessage("Por favor, complete todos los campos del servicio.", true);
             
             receiptItems.push({
                 ...service,
@@ -137,11 +152,14 @@
             let total = 0;
             list.innerHTML = receiptItems.map(item => {
                 total += item.precioTotalLinea;
-                return `<li class="bg-white p-3 rounded-2xl mb-2 flex justify-between items-center text-xs shadow-sm border border-slate-50">
-                    <div><b>${item.date}</b> - ${item.descripcion}<br><span class="text-slate-400">${item.beneficiario}</span></div>
+                return `<li class="bg-white p-4 rounded-2xl mb-3 flex justify-between items-center text-xs shadow-sm border border-slate-50 animate-fade-in">
+                    <div>
+                        <b class="text-slate-800">${item.date}</b> - ${item.descripcion}<br>
+                        <span class="text-slate-400 font-medium">${item.beneficiario}</span>
+                    </div>
                     <div class="text-right">
                         <div class="font-bold text-indigo-600">$${item.precioTotalLinea.toFixed(2)}</div>
-                        <button onclick="removeItem(${item.tempId})" class="text-rose-400"><i class="fas fa-trash-alt"></i></button>
+                        <button onclick="removeItem(${item.tempId})" class="text-rose-400 hover:text-rose-600 mt-1"><i class="fas fa-trash-alt"></i></button>
                     </div>
                 </li>`;
             }).join('');
@@ -150,21 +168,26 @@
             document.getElementById('total-bs').textContent = (total * rate).toLocaleString('es-VE', {minimumFractionDigits:2});
         }
 
-        function removeItem(id) { receiptItems = receiptItems.filter(i => i.tempId !== id); renderReceiptItems(); }
+        function removeItem(id) { 
+            receiptItems = receiptItems.filter(i => i.tempId !== id); 
+            renderReceiptItems(); 
+        }
 
         async function processReceipt() {
-            if (receiptItems.length === 0) return showMessage("Recibo vacío", true);
+            if (receiptItems.length === 0) return showMessage("El recibo no tiene servicios agregados.", true);
             const emisor = emitters.find(e => String(e.id) === document.getElementById('emitter-select').value);
             const receptor = recipients.find(r => String(r.id) === document.getElementById('recipient-select').value);
             const totalUSD = parseFloat(document.getElementById('total-usd').textContent);
             const rate = parseFloat(document.getElementById('bcv-rate').value) || 0;
+
+            if (!emisor || !receptor) return showMessage("Seleccione emisor y receptor.", true);
 
             const payload = {
                 id: editingReceiptId || 'REC-' + Date.now(),
                 fecha_creacion: new Date().toISOString(),
                 fecharecibo: document.getElementById('issue-date').value.split('-').reverse().join('/'),
                 numerorecibo: editingReceiptId ? savedReceipts.find(r => r.id === editingReceiptId).numerorecibo : 
-                             (emisor.usarcorrelativo ? nextReceiptNumber : "S/N"),
+                             ((emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true") ? nextReceiptNumber : "S/N"),
                 nombreemisor: emisor.nombre,
                 nombrereceptor: receptor.nombre,
                 totalusd: totalUSD,
@@ -173,49 +196,64 @@
             };
 
             try {
-                showMessage("Guardando...");
-                // Usamos POST con redirección manual para evitar problemas de CORS
+                showMessage("Guardando en la base de datos...");
+                // Se usa no-cors para evitar problemas con redirecciones de Google Scripts en POST
                 await fetch(API_URL, {
                     method: 'POST',
-                    mode: 'no-cors', // Importante para Google Apps Script POST
-                    body: JSON.stringify({ action: editingReceiptId ? 'update' : 'create', collection: 'RecibosGuardados', payload })
+                    mode: 'no-cors',
+                    body: JSON.stringify({ 
+                        action: editingReceiptId ? 'update' : 'create', 
+                        collection: 'RecibosGuardados', 
+                        payload 
+                    })
                 });
 
-                if (!editingReceiptId && emisor.usarcorrelativo) {
+                if (!editingReceiptId && (emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true")) {
                     await fetch(API_URL, {
                         method: 'POST',
                         mode: 'no-cors',
-                        body: JSON.stringify({ action: 'update', collection: 'Configuracion', payload: { clave: 'correlativo', valor: (nextReceiptNumber + 1).toString() }})
+                        body: JSON.stringify({ 
+                            action: 'update', 
+                            collection: 'Configuracion', 
+                            payload: { clave: 'correlativo', valor: (nextReceiptNumber + 1).toString() }
+                        })
                     });
                 }
 
                 setTimeout(() => {
                     cancelEdit();
                     fetchAllData();
-                    showMessage("Guardado exitoso");
+                    showMessage("Recibo guardado con éxito.");
                 }, 1500);
-            } catch (e) { showMessage("Error de conexión", true); }
+            } catch (e) { 
+                showMessage("Error al guardar el recibo.", true); 
+            }
         }
 
         function formatHistoryDate(dateStr) {
             if (!dateStr) return "S/F";
             const d = new Date(dateStr);
             if (isNaN(d)) return dateStr;
+            const day = String(d.getDate()).padStart(2,'0');
+            const month = String(d.getMonth()+1).padStart(2,'0');
+            const year = String(d.getFullYear()).slice(-2);
             const h = d.getHours();
-            return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(-2)} ${h % 12 || 12}:${String(d.getMinutes()).padStart(2,'0')}${h >= 12 ? 'pm' : 'am'}`;
+            const min = String(d.getMinutes()).padStart(2,'0');
+            return `${day}/${month}/${year} ${h % 12 || 12}:${min}${h >= 12 ? 'pm' : 'am'}`;
         }
 
         function renderHistory() {
             const list = document.getElementById('history-list');
+            if (!list) return;
             const sorted = [...savedReceipts].sort((a,b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion));
             list.innerHTML = sorted.map(r => `
-                <div class="p-4 bg-white border rounded-3xl mb-3 flex justify-between items-center shadow-sm">
-                    <div>
-                        <b class="text-sm">Recibo ${r.numerorecibo}</b><br>
-                        <small class="text-slate-400 font-bold">${formatHistoryDate(r.fecha_creacion)}</small>
-                        <p class="text-[11px] text-slate-500 truncate">${r.nombrereceptor}</p>
+                <div class="p-5 bg-white border rounded-[2rem] mb-3 flex justify-between items-center shadow-sm hover:shadow-md transition-shadow">
+                    <div class="truncate">
+                        <b class="text-sm text-slate-800">Recibo ${r.numerorecibo}</b><br>
+                        <small class="text-slate-400 font-bold uppercase text-[9px]">${formatHistoryDate(r.fecha_creacion)}</small>
+                        <p class="text-[11px] text-slate-500 truncate mt-1">${r.nombrereceptor}</p>
                     </div>
-                    <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-9 w-9 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center"><i class="fas fa-edit text-xs"></i></button>
+                    <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-10 w-10 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-600 hover:text-white transition-colors"><i class="fas fa-edit text-xs"></i></button>
                 </div>`).join('');
         }
 
@@ -233,16 +271,19 @@
         }
 
         function cancelEdit() {
-            editingReceiptId = null; receiptItems = [];
+            editingReceiptId = null; 
+            receiptItems = [];
             document.getElementById('receipt-action-title').textContent = "Nuevo Recibo";
             document.getElementById('cancel-edit-btn').classList.add('hidden');
             renderReceiptItems();
         }
 
         function renderManagementLists() {
-            document.getElementById('list-s').innerHTML = services.map(s => `
-                <div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border shadow-sm">
-                    <span class="text-xs font-bold">${s.descripcion}</span>
+            const container = document.getElementById('list-s');
+            if (!container) return;
+            container.innerHTML = services.map(s => `
+                <div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border border-slate-100 shadow-sm">
+                    <span class="text-xs font-bold text-slate-700">${s.descripcion}</span>
                     <span class="text-indigo-600 font-bold text-xs">$${parseFloat(s.precio).toFixed(2)}</span>
                 </div>`).join('');
         }
@@ -255,66 +296,132 @@
         };
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
-        .tab-content { animation: fadeIn 0.3s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .tab-content { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="p-4 sm:p-6 min-h-screen">
-    <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300"></div>
-    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+<body class="p-4 sm:p-6 min-h-screen text-slate-800">
+    <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300 fixed top-6 right-6 z-[100]"></div>
+    
+    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <!-- Sidebar -->
         <div class="lg:col-span-3 space-y-6">
-            <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-white">
-                <h1 class="text-xl font-extrabold mb-8 text-slate-900">MED<span class="text-indigo-600">CLOUD</span></h1>
-                <nav class="space-y-2">
-                    <button id="btn-recibos" onclick="switchTab('recibos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold bg-indigo-600 text-white flex items-center gap-3 transition-all"><i class="fas fa-plus"></i> <span id="receipt-action-title">Nuevo Recibo</span></button>
+            <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-white">
+                <div class="flex items-center gap-3 mb-10">
+                    <div class="h-10 w-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200"><i class="fas fa-notes-medical"></i></div>
+                    <h1 class="text-xl font-extrabold tracking-tight text-slate-900">MED<span class="text-indigo-600">CLOUD</span></h1>
+                </div>
+                
+                <nav class="space-y-3">
+                    <button id="btn-recibos" onclick="switchTab('recibos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold bg-indigo-600 text-white flex items-center gap-3 transition-all shadow-xl shadow-indigo-100"><i class="fas fa-plus-circle"></i> <span id="receipt-action-title">Nuevo Recibo</span></button>
                     <button id="btn-historial" onclick="switchTab('historial')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold text-slate-500 hover:bg-slate-50 flex items-center gap-3 transition-all"><i class="fas fa-history"></i> Historial</button>
-                    <button id="btn-datos" onclick="switchTab('datos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold text-slate-500 hover:bg-slate-50 flex items-center gap-3 transition-all"><i class="fas fa-list"></i> Servicios</button>
+                    <button id="btn-datos" onclick="switchTab('datos')" class="tab-btn w-full p-4 rounded-full text-left text-sm font-bold text-slate-500 hover:bg-slate-50 flex items-center gap-3 transition-all"><i class="fas fa-microscope"></i> Servicios</button>
                 </nav>
-                <button id="cancel-edit-btn" onclick="cancelEdit()" class="hidden w-full mt-4 p-4 rounded-full text-left text-sm font-bold bg-rose-50 text-rose-500 border border-rose-100 flex items-center gap-3"><i class="fas fa-times"></i> Cancelar Edición</button>
+                
+                <button id="cancel-edit-btn" onclick="cancelEdit()" class="hidden w-full mt-6 p-4 rounded-full text-left text-sm font-bold bg-rose-50 text-rose-500 border border-rose-100 flex items-center gap-3"><i class="fas fa-times"></i> Cancelar Edición</button>
             </div>
-            <div class="bg-slate-900 p-6 rounded-[2.5rem] text-white">
-                <label class="text-[10px] font-black text-slate-400 block mb-2 uppercase tracking-widest">Tasa BCV</label>
-                <input type="number" id="bcv-rate" step="any" oninput="renderReceiptItems()" class="w-full bg-slate-800 p-4 rounded-2xl text-emerald-400 font-bold text-2xl outline-none border border-slate-700">
+            
+            <div class="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-slate-200">
+                <label class="text-[10px] font-black text-slate-400 block mb-3 uppercase tracking-widest">Tasa BCV del día</label>
+                <input type="number" id="bcv-rate" step="any" oninput="renderReceiptItems()" placeholder="0.00" class="w-full bg-slate-800 p-5 rounded-2xl text-emerald-400 font-bold text-3xl outline-none border border-slate-700 focus:border-emerald-500 transition-colors">
             </div>
-            <div class="bg-white p-6 rounded-[2.5rem] text-center border shadow-sm">
-                <small class="text-slate-400 font-bold uppercase text-[10px] block mb-1">Correlativo</small>
-                <div class="text-2xl font-black text-indigo-950" id="receipt-number-display">00000</div>
+            
+            <div class="bg-white p-6 rounded-[2.5rem] text-center border border-white shadow-sm">
+                <small class="text-slate-400 font-bold uppercase text-[10px] block mb-1 tracking-tighter">N° Control / Correlativo</small>
+                <div class="text-3xl font-black text-slate-900" id="receipt-number-display">00000</div>
             </div>
         </div>
-        <div class="lg:col-span-9 bg-white rounded-[2.5rem] shadow-sm border border-white min-h-[80vh] overflow-hidden flex flex-col">
-            <div id="tab-recibos" class="tab-content p-6 sm:p-10 space-y-8 flex-1">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <select id="emitter-select" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none"></select>
-                    <select id="recipient-select" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none"></select>
-                    <input type="date" id="issue-date" class="w-full p-4 bg-slate-50 rounded-full text-sm font-semibold outline-none">
-                </div>
-                <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                    <div class="lg:col-span-5 bg-indigo-50/50 p-6 rounded-[2rem] space-y-4">
-                        <input type="text" id="patient-search" list="patients-list" placeholder="🔍 Paciente" class="w-full p-4 rounded-full bg-white text-sm outline-none shadow-sm">
-                        <datalist id="patients-list"></datalist>
-                        <div class="flex gap-2">
-                            <input type="date" id="service-date" class="w-full p-4 rounded-full bg-white text-xs outline-none shadow-sm">
-                            <input type="number" id="service-qty" value="1" min="1" class="w-20 p-4 rounded-full bg-white font-bold text-center text-sm outline-none shadow-sm">
-                        </div>
-                        <select id="service-select" class="w-full p-4 rounded-full bg-white text-sm outline-none shadow-sm"></select>
-                        <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-4 rounded-full font-bold text-xs uppercase tracking-widest">Agregar Servicio</button>
+
+        <!-- Main Content -->
+        <div class="lg:col-span-9 bg-white rounded-[3rem] shadow-sm border border-white min-h-[85vh] overflow-hidden flex flex-col">
+            <!-- Tab: Nuevo Recibo -->
+            <div id="tab-recibos" class="tab-content p-6 sm:p-12 space-y-10 flex-1">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="space-y-2">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase ml-4">Emisor</label>
+                        <select id="emitter-select" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-full text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"></select>
                     </div>
-                    <div class="lg:col-span-7 flex flex-col">
-                        <div class="flex items-center gap-4 mb-6">
-                            <div class="text-4xl font-black">$<span id="total-usd">0.00</span></div>
-                            <div class="bg-emerald-100 text-emerald-600 px-4 py-1 rounded-full text-[10px] font-black">Bs. <span id="total-bs">0,00</span></div>
+                    <div class="space-y-2">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase ml-4">Receptor / Empresa</label>
+                        <select id="recipient-select" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-full text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"></select>
+                    </div>
+                    <div class="space-y-2">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase ml-4">Fecha Recibo</label>
+                        <input type="date" id="issue-date" class="w-full p-4 bg-slate-50 border border-slate-100 rounded-full text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-10">
+                    <!-- Formulario de Servicio -->
+                    <div class="lg:col-span-5 bg-indigo-50/40 p-8 rounded-[3rem] space-y-5 border border-indigo-100/50">
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Paciente</label>
+                            <input type="text" id="patient-search" list="patients-list" placeholder="Buscar paciente..." class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm">
+                            <datalist id="patients-list"></datalist>
                         </div>
-                        <div class="flex-1 min-h-[250px] bg-slate-50/50 rounded-[2rem] p-4 mb-4 overflow-y-auto"><ul id="receipt-items-list"></ul></div>
-                        <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-5 rounded-full font-black shadow-lg uppercase tracking-widest text-sm">Generar Recibo</button>
+                        
+                        <div class="flex gap-4">
+                            <div class="flex-1 space-y-2">
+                                <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Fecha Atención</label>
+                                <input type="date" id="service-date" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-xs font-semibold outline-none shadow-sm">
+                            </div>
+                            <div class="w-24 space-y-2">
+                                <label class="text-[10px] font-bold text-indigo-400 uppercase text-center block">Cant.</label>
+                                <input type="number" id="service-qty" value="1" min="1" class="w-full p-4 rounded-full bg-white border border-indigo-100 font-bold text-center text-sm text-indigo-600 outline-none shadow-sm">
+                            </div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Servicio Médico</label>
+                            <select id="service-select" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm"></select>
+                        </div>
+                        
+                        <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-5 rounded-full font-bold text-xs uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg shadow-slate-200">Añadir al Recibo</button>
+                    </div>
+
+                    <!-- Visualización del Recibo -->
+                    <div class="lg:col-span-7 flex flex-col">
+                        <div class="flex items-center justify-between mb-8">
+                            <div class="flex items-baseline gap-2">
+                                <span class="text-4xl font-black text-slate-900">$<span id="total-usd">0.00</span></span>
+                                <span class="text-slate-400 font-bold text-sm">USD</span>
+                            </div>
+                            <div class="bg-emerald-50 text-emerald-600 px-6 py-2 rounded-full text-sm font-bold border border-emerald-100">
+                                Bs. <span id="total-bs">0,00</span>
+                            </div>
+                        </div>
+                        
+                        <div class="flex-1 min-h-[300px] bg-slate-50/50 rounded-[2.5rem] p-6 mb-8 border border-slate-100 overflow-y-auto">
+                            <ul id="receipt-items-list">
+                                <!-- Items dinámicos -->
+                            </ul>
+                            <div id="empty-state" class="h-full flex flex-col items-center justify-center text-slate-300 pointer-events-none hidden">
+                                <i class="fas fa-receipt text-5xl mb-4"></i>
+                                <p class="text-xs font-bold uppercase tracking-widest">Sin servicios agregados</p>
+                            </div>
+                        </div>
+                        
+                        <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-6 rounded-full font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all uppercase tracking-widest text-sm">Finalizar y Guardar</button>
                     </div>
                 </div>
             </div>
-            <div id="tab-historial" class="tab-content hidden p-6 sm:p-10 space-y-6 flex-1"><div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div></div>
-            <div id="tab-datos" class="tab-content hidden p-6 sm:p-10 space-y-6 flex-1"><div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div></div>
+
+            <!-- Tab: Historial -->
+            <div id="tab-historial" class="tab-content hidden p-6 sm:p-12 space-y-8 flex-1">
+                <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Cards dinámicas -->
+                </div>
+            </div>
+
+            <!-- Tab: Servicios -->
+            <div id="tab-datos" class="tab-content hidden p-6 sm:p-12 space-y-8 flex-1">
+                <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Items dinámicos -->
+                </div>
+            </div>
         </div>
     </div>
 </body>
-
 </html>
