@@ -11,13 +11,12 @@
     
     <script>
         /**
-         * URL de la API de Google Apps Script.
-         * IMPORTANTE: Asegúrate de que el Script esté publicado como:
-         * 1. Ejecutar como: El usuario que accede a la aplicación web (o "Yo" dependiendo de tu flujo).
-         * 2. Quién tiene acceso: Cualquier persona con una cuenta de Google.
+         * URL DE IMPLEMENTACIÓN ACTUALIZADA
+         * Se ha actualizado a la versión con restricciones de usuario:
+         * ...jEMIox08QVhVZ/exec
          */
         const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzA1b7RA3dSVIQdBsUTWw8n9bFRr7wNul9-RJK_REHSDRKt18xAkY-jEMIox08QVhVZ/exec';
-        let API_URL = localStorage.getItem('medical_app_sheet_url') || DEFAULT_API_URL;
+        let API_URL = DEFAULT_API_URL;
         
         let emitters = [], recipients = [], patients = [], services = [], savedReceipts = [];
         let receiptItems = [], nextReceiptNumber = 1, editingReceiptId = null;
@@ -32,23 +31,28 @@
         }
 
         /**
-         * Carga todos los datos desde el Script de Google.
+         * Carga de datos con manejo de redirección de Google
          */
         async function fetchAllData() {
-            if (!API_URL) return;
+            const loader = document.getElementById('global-loader');
+            if (loader) loader.classList.remove('hidden');
+            
             try {
-                // Se utiliza una petición simple para evitar conflictos de CORS pre-flight
-                const response = await fetch(`${API_URL}?action=getAll`, {
-                    method: 'GET'
+                // Añadimos un timestamp para evitar caché
+                const response = await fetch(`${API_URL}?action=getAll&t=${Date.now()}`, {
+                    method: 'GET',
+                    mode: 'cors',
+                    redirect: 'follow'
                 });
                 
-                if (!response.ok) throw new Error("No se pudo obtener respuesta del servidor.");
+                if (!response.ok) throw new Error("Error en la respuesta del servidor");
                 
                 const result = await response.json();
                 
                 if (result && result.status === 'success') {
                     const d = result.data;
-                    // Mapeo de datos con fallback para evitar errores de undefined
+                    
+                    // Normalización de datos
                     emitters = d.Emisores || d.emisores || [];
                     recipients = d.Receptores || d.receptores || [];
                     patients = (d.Pacientes || d.pacientes || []).map(p => ({
@@ -68,18 +72,14 @@
                     renderManagementLists();
                     renderHistory();
                     updateReceiptNumberDisplay();
-                } else if (result.status === 'error' && result.message.includes('Acceso Denegado')) {
-                    document.body.innerHTML = `
-                        <div class="h-screen w-screen flex flex-col items-center justify-center bg-slate-50 p-10 text-center">
-                            <i class="fas fa-user-lock text-6xl text-rose-500 mb-6"></i>
-                            <h1 class="text-3xl font-black text-slate-900 mb-2">Usuario no Autorizado</h1>
-                            <p class="text-slate-500 max-w-md mb-6">Esta aplicación está restringida. Debes iniciar sesión con la cuenta de Google autorizada.</p>
-                            <button onclick="location.reload()" class="bg-indigo-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">Reintentar Acceso</button>
-                        </div>`;
+                    if (loader) loader.classList.add('hidden');
+                } else {
+                    throw new Error(result.message || "Error desconocido");
                 }
             } catch (e) { 
-                console.error("Error en fetchAllData:", e); 
-                showMessage("Error de conexión: No se pudo cargar la base de datos.", true);
+                console.error("Error al cargar datos:", e);
+                if (loader) loader.classList.add('hidden');
+                showMessage("Error de conexión. Verifique permisos del Script.", true);
             }
         }
 
@@ -112,7 +112,7 @@
             const fill = (id, list, key) => {
                 const el = document.getElementById(id);
                 if (!el) return;
-                el.innerHTML = `<option value="">Seleccionar...</option>` + list.map(i => `<option value="${i.id}">${i[key] || i.nombre}</option>`).join('');
+                el.innerHTML = `<option value="">Seleccionar...</option>` + list.map(i => `<option value="${i.id}">${i[key] || i.nombre || i.descripcion}</option>`).join('');
             };
             fill('emitter-select', emitters, 'nombre');
             fill('recipient-select', recipients, 'nombre');
@@ -131,7 +131,7 @@
             const service = services.find(s => String(s.id) === String(sId));
             const patient = patients.find(p => p.displayName === pSearch);
             
-            if (!service || !patient || !date) return showMessage("Por favor, complete todos los campos del servicio.", true);
+            if (!service || !patient || !date) return showMessage("Complete todos los campos del servicio.", true);
             
             receiptItems.push({
                 ...service,
@@ -174,7 +174,7 @@
         }
 
         async function processReceipt() {
-            if (receiptItems.length === 0) return showMessage("El recibo no tiene servicios agregados.", true);
+            if (receiptItems.length === 0) return showMessage("El recibo está vacío.", true);
             const emisor = emitters.find(e => String(e.id) === document.getElementById('emitter-select').value);
             const receptor = recipients.find(r => String(r.id) === document.getElementById('recipient-select').value);
             const totalUSD = parseFloat(document.getElementById('total-usd').textContent);
@@ -196,8 +196,7 @@
             };
 
             try {
-                showMessage("Guardando en la base de datos...");
-                // Se usa no-cors para evitar problemas con redirecciones de Google Scripts en POST
+                showMessage("Procesando...");
                 await fetch(API_URL, {
                     method: 'POST',
                     mode: 'no-cors',
@@ -223,23 +222,11 @@
                 setTimeout(() => {
                     cancelEdit();
                     fetchAllData();
-                    showMessage("Recibo guardado con éxito.");
-                }, 1500);
+                    showMessage("Recibo guardado.");
+                }, 1000);
             } catch (e) { 
-                showMessage("Error al guardar el recibo.", true); 
+                showMessage("Error al guardar.", true); 
             }
-        }
-
-        function formatHistoryDate(dateStr) {
-            if (!dateStr) return "S/F";
-            const d = new Date(dateStr);
-            if (isNaN(d)) return dateStr;
-            const day = String(d.getDate()).padStart(2,'0');
-            const month = String(d.getMonth()+1).padStart(2,'0');
-            const year = String(d.getFullYear()).slice(-2);
-            const h = d.getHours();
-            const min = String(d.getMinutes()).padStart(2,'0');
-            return `${day}/${month}/${year} ${h % 12 || 12}:${min}${h >= 12 ? 'pm' : 'am'}`;
         }
 
         function renderHistory() {
@@ -247,20 +234,20 @@
             if (!list) return;
             const sorted = [...savedReceipts].sort((a,b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion));
             list.innerHTML = sorted.map(r => `
-                <div class="p-5 bg-white border rounded-[2rem] mb-3 flex justify-between items-center shadow-sm hover:shadow-md transition-shadow">
+                <div class="p-4 bg-white border rounded-3xl mb-3 flex justify-between items-center shadow-sm">
                     <div class="truncate">
                         <b class="text-sm text-slate-800">Recibo ${r.numerorecibo}</b><br>
-                        <small class="text-slate-400 font-bold uppercase text-[9px]">${formatHistoryDate(r.fecha_creacion)}</small>
-                        <p class="text-[11px] text-slate-500 truncate mt-1">${r.nombrereceptor}</p>
+                        <small class="text-slate-400 font-bold uppercase text-[9px]">${r.fecharecibo}</small>
+                        <p class="text-[11px] text-slate-500 truncate">${r.nombrereceptor}</p>
                     </div>
-                    <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-10 w-10 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-600 hover:text-white transition-colors"><i class="fas fa-edit text-xs"></i></button>
+                    <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-9 w-9 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-600 hover:text-white transition-colors"><i class="fas fa-edit text-xs"></i></button>
                 </div>`).join('');
         }
 
         function loadReceiptForEdit(r) {
             const data = JSON.parse(r.jsoncompleto);
-            document.getElementById('emitter-select').value = data.emisor.id;
-            document.getElementById('recipient-select').value = data.receptor.id;
+            document.getElementById('emitter-select').value = emitters.find(e => e.nombre === r.nombreemisor)?.id || "";
+            document.getElementById('recipient-select').value = recipients.find(rec => rec.nombre === r.nombrereceptor)?.id || "";
             document.getElementById('bcv-rate').value = data.rate || "";
             receiptItems = data.items.map(i => ({ ...i, tempId: Date.now() + Math.random() }));
             editingReceiptId = r.id;
@@ -282,7 +269,7 @@
             const container = document.getElementById('list-s');
             if (!container) return;
             container.innerHTML = services.map(s => `
-                <div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border border-slate-100 shadow-sm">
+                <div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border border-slate-100">
                     <span class="text-xs font-bold text-slate-700">${s.descripcion}</span>
                     <span class="text-indigo-600 font-bold text-xs">$${parseFloat(s.precio).toFixed(2)}</span>
                 </div>`).join('');
@@ -298,11 +285,25 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
-        .tab-content { animation: fadeIn 0.4s ease-out forwards; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .tab-content { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .loader-dot { animation: dotPulse 1.5s infinite ease-in-out; }
+        @keyframes dotPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
     </style>
 </head>
 <body class="p-4 sm:p-6 min-h-screen text-slate-800">
+    <!-- Cargador Global -->
+    <div id="global-loader" class="fixed inset-0 bg-slate-900/10 backdrop-blur-sm z-[200] flex items-center justify-center hidden">
+        <div class="bg-white p-6 rounded-[2rem] shadow-2xl flex items-center gap-4">
+            <div class="flex gap-1">
+                <div class="w-2 h-2 bg-indigo-600 rounded-full loader-dot"></div>
+                <div class="w-2 h-2 bg-indigo-600 rounded-full loader-dot" style="animation-delay: 0.2s"></div>
+                <div class="w-2 h-2 bg-indigo-600 rounded-full loader-dot" style="animation-delay: 0.4s"></div>
+            </div>
+            <span class="text-xs font-black uppercase tracking-widest text-slate-600">Sincronizando...</span>
+        </div>
+    </div>
+
     <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300 fixed top-6 right-6 z-[100]"></div>
     
     <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -311,7 +312,7 @@
             <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-white">
                 <div class="flex items-center gap-3 mb-10">
                     <div class="h-10 w-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200"><i class="fas fa-notes-medical"></i></div>
-                    <h1 class="text-xl font-extrabold tracking-tight text-slate-900">MED<span class="text-indigo-600">CLOUD</span></h1>
+                    <h1 class="text-xl font-extrabold tracking-tight text-slate-900 uppercase">Med<span class="text-indigo-600">Cloud</span></h1>
                 </div>
                 
                 <nav class="space-y-3">
@@ -354,11 +355,10 @@
                 </div>
 
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-10">
-                    <!-- Formulario de Servicio -->
                     <div class="lg:col-span-5 bg-indigo-50/40 p-8 rounded-[3rem] space-y-5 border border-indigo-100/50">
                         <div class="space-y-2">
                             <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Paciente</label>
-                            <input type="text" id="patient-search" list="patients-list" placeholder="Buscar paciente..." class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm">
+                            <input type="text" id="patient-search" list="patients-list" placeholder="Buscar paciente..." class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none shadow-sm">
                             <datalist id="patients-list"></datalist>
                         </div>
                         
@@ -375,13 +375,12 @@
 
                         <div class="space-y-2">
                             <label class="text-[10px] font-bold text-indigo-400 uppercase ml-4">Servicio Médico</label>
-                            <select id="service-select" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm"></select>
+                            <select id="service-select" class="w-full p-4 rounded-full bg-white border border-indigo-100 text-sm font-medium outline-none shadow-sm"></select>
                         </div>
                         
                         <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-5 rounded-full font-bold text-xs uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg shadow-slate-200">Añadir al Recibo</button>
                     </div>
 
-                    <!-- Visualización del Recibo -->
                     <div class="lg:col-span-7 flex flex-col">
                         <div class="flex items-center justify-between mb-8">
                             <div class="flex items-baseline gap-2">
@@ -394,13 +393,7 @@
                         </div>
                         
                         <div class="flex-1 min-h-[300px] bg-slate-50/50 rounded-[2.5rem] p-6 mb-8 border border-slate-100 overflow-y-auto">
-                            <ul id="receipt-items-list">
-                                <!-- Items dinámicos -->
-                            </ul>
-                            <div id="empty-state" class="h-full flex flex-col items-center justify-center text-slate-300 pointer-events-none hidden">
-                                <i class="fas fa-receipt text-5xl mb-4"></i>
-                                <p class="text-xs font-bold uppercase tracking-widest">Sin servicios agregados</p>
-                            </div>
+                            <ul id="receipt-items-list"></ul>
                         </div>
                         
                         <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-6 rounded-full font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all uppercase tracking-widest text-sm">Finalizar y Guardar</button>
@@ -409,17 +402,13 @@
             </div>
 
             <!-- Tab: Historial -->
-            <div id="tab-historial" class="tab-content hidden p-6 sm:p-12 space-y-8 flex-1">
-                <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <!-- Cards dinámicas -->
-                </div>
+            <div id="tab-historial" class="tab-content hidden p-10 flex-1">
+                <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
 
             <!-- Tab: Servicios -->
-            <div id="tab-datos" class="tab-content hidden p-6 sm:p-12 space-y-8 flex-1">
-                <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <!-- Items dinámicos -->
-                </div>
+            <div id="tab-datos" class="tab-content hidden p-10 flex-1">
+                <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
         </div>
     </div>
