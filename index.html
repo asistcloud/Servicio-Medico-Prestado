@@ -17,7 +17,6 @@
         let emitters = [], recipients = [], patients = [], services = [], savedReceipts = [];
         let receiptItems = [], nextReceiptNumber = 1, editingReceiptId = null;
 
-        // FUNCIÓN CRÍTICA: Normaliza las llaves de un objeto (quita espacios, pone en minúsculas)
         function normalizeObjectKeys(obj) {
             const normalized = {};
             for (let key in obj) {
@@ -76,13 +75,9 @@
                         familiar: p.familiar || "" 
                     })).sort((a, b) => a.displayName.localeCompare(b.displayName));
                     
-                    // NORMALIZAMOS LOS SERVICIOS AL CARGARLOS
                     services = (d.Servicios || []).map(s => {
                         const norm = normalizeObjectKeys(s);
-                        return {
-                            ...s, // Mantenemos originales por si acaso
-                            _norm: norm // Guardamos versión normalizada para acceso fácil
-                        };
+                        return { ...s, _norm: norm };
                     });
 
                     savedReceipts = d.RecibosGuardados || [];
@@ -246,15 +241,29 @@
             doc.autoTable({
                 startY: currentY + 4,
                 margin: { left: marginX, right: marginX },
-                head: [['#', 'FECHA SERV.', 'NOMBRES CI / PACIENTE', 'SERVICIO', 'CANT', 'P/U', 'TOTAL']],
+                head: [['N°', 'FECHA', 'NOMBRES CI / PACIENTE', 'SERVICIO', 'CANT', 'P/U', 'TOTAL']],
                 body: tableData,
                 theme: 'grid',
-                headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
-                styles: { fontSize: 7.5, cellPadding: 3, valign: 'middle', lineColor: [226, 232, 240] },
+                // Ajuste de cellPadding en head para reducir drásticamente el alto de la fila del encabezado
+                headStyles: { 
+                    fillColor: [79, 70, 229], 
+                    textColor: [255, 255, 255], 
+                    fontStyle: 'bold', 
+                    fontSize: 8, 
+                    halign: 'center',
+                    cellPadding: { top: 1.5, bottom: 1.5, left: 1, right: 1 } // Padding reducido
+                },
+                styles: { 
+                    fontSize: 7.5, 
+                    cellPadding: 3, 
+                    valign: 'middle', 
+                    lineColor: [226, 232, 240],
+                    overflow: 'linebreak'
+                },
                 columnStyles: { 
-                    0: { cellWidth: 8, halign: 'center' }, 
+                    0: { cellWidth: 10, halign: 'center' }, // Ancho ajustado para que el símbolo N° entre bien
                     1: { cellWidth: 20, halign: 'center' }, 
-                    2: { cellWidth: 55 }, 
+                    2: { cellWidth: 53 }, 
                     4: { cellWidth: 14, halign: 'center' },
                     5: { cellWidth: 18, halign: 'right' }, 
                     6: { cellWidth: 20, halign: 'right' } 
@@ -275,7 +284,6 @@
             doc.save(fileName);
         }
 
-        // FUNCIÓN MEJORADA: Busca el valor en el objeto normalizado
         function getNormValue(service, keys) {
             if (!service || !service._norm) return null;
             for (let k of keys) {
@@ -292,7 +300,6 @@
             const service = services.find(s => String(s.id) === String(sId));
             const qtyInput = document.getElementById('service-qty');
             if (service) {
-                // Buscamos cantidadDefecto usando el buscador normalizado
                 const qtyVal = getNormValue(service, ['cantidadDefecto', 'cantidad_defecto', 'cantidad']) || 1;
                 qtyInput.value = qtyVal;
             } else {
@@ -323,7 +330,6 @@
             
             if (!service || !patient || !date) return showMessage("Faltan datos por completar.", true);
             
-            // MAPEO USANDO NORMALIZACIÓN
             const currentQty = parseInt(getNormValue(service, ['cantidadDefecto', 'cantidad_defecto', 'cantidad']) || 1);
             const valorPUTabla = parseFloat(getNormValue(service, ['preciounitario', 'pu', 'p/u']) || 0);
             const valorTotalTabla = parseFloat(getNormValue(service, ['precio', 'total', 'preciototal']) || 0);
@@ -441,7 +447,9 @@
             fill('emitter-select', emitters, 'nombre');
             fill('recipient-select', recipients, 'nombre');
             fill('service-select', services, 'descripcion');
-            document.getElementById('patients-list').innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
+            
+            const pList = document.getElementById('patients-list');
+            pList.innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
         }
 
         function renderManagementLists() {
@@ -449,8 +457,6 @@
             container.innerHTML = services.map(s => {
                 const total = parseFloat(getNormValue(s, ['precio', 'total']) || 0);
                 const qty = getNormValue(s, ['cantidadDefecto', 'cantidad']) || 1;
-                // CAMBIO SOLICITADO ANTERIORMENTE: uds -> serv
-                // AÑADIDO: Icono de servicio médico
                 return `
                 <div class="p-5 flex justify-between items-center bg-white mb-2 rounded-[2rem] border border-slate-100 shadow-sm hover:border-indigo-100 transition-all">
                     <div class="flex items-center gap-4">
@@ -483,10 +489,18 @@
         @keyframes dotPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
         .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        select, input[list] {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1.25rem center;
+            background-size: 1rem;
+            padding-right: 3rem !important;
+        }
     </style>
 </head>
 <body class="p-4 sm:p-6 min-h-screen text-slate-800">
-    <!-- Login Screen -->
     <div id="login-screen" class="fixed inset-0 bg-slate-50 z-[300] flex items-center justify-center p-6">
         <div class="max-w-md w-full bg-white p-10 rounded-[3.5rem] shadow-2xl border border-slate-100 text-center">
             <div class="h-20 w-20 bg-indigo-600 rounded-[2rem] flex items-center justify-center text-white text-3xl mx-auto mb-8 shadow-2xl shadow-indigo-200"><i class="fas fa-fingerprint"></i></div>
@@ -498,7 +512,6 @@
         </div>
     </div>
 
-    <!-- Main App -->
     <div id="main-app" class="hidden">
         <div id="global-loader" class="fixed inset-0 bg-slate-900/10 backdrop-blur-sm z-[200] flex items-center justify-center hidden">
             <div class="bg-white p-8 rounded-[3rem] shadow-2xl flex items-center gap-6">
@@ -510,7 +523,6 @@
         <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300 fixed top-6 right-6 z-[100]"></div>
         
         <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <!-- Sidebar -->
             <div class="lg:col-span-3 space-y-6">
                 <div class="bg-white p-8 rounded-[3rem] shadow-sm border border-white">
                     <div class="flex items-center justify-between mb-12">
@@ -545,10 +557,8 @@
                 </div>
             </div>
 
-            <!-- Main Content Area -->
             <div class="lg:col-span-9 bg-white rounded-[3.5rem] shadow-sm border border-white min-h-[85vh] flex flex-col overflow-hidden">
                 <div id="tab-recibos" class="tab-content p-6 sm:p-12 space-y-12 flex-1 overflow-y-auto">
-                    <!-- Receipt Header -->
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
                         <div class="space-y-3">
                             <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Emisor</label>
@@ -565,11 +575,10 @@
                     </div>
 
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-12">
-                        <!-- Service Form -->
                         <div class="lg:col-span-5 bg-indigo-50/30 p-10 rounded-[3.5rem] space-y-6 border border-indigo-100/30">
                             <div class="space-y-3">
-                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Paciente</label>
-                                <input type="text" id="patient-search" list="patients-list" placeholder="Buscar paciente..." class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none">
+                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Paciente (Escriba para buscar)</label>
+                                <input type="text" id="patient-search" list="patients-list" autocomplete="off" placeholder="Nombres..." class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none">
                                 <datalist id="patients-list"></datalist>
                             </div>
                             <div class="flex gap-4">
@@ -583,13 +592,12 @@
                                 </div>
                             </div>
                             <div class="space-y-3">
-                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Servicio (desde Tabla)</label>
+                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Servicio</label>
                                 <select id="service-select" class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none"></select>
                             </div>
                             <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-6 rounded-full font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg"><i class="fas fa-cart-plus mr-2"></i> Agregar a la lista</button>
                         </div>
 
-                        <!-- Items List -->
                         <div class="lg:col-span-7 flex flex-col">
                             <div class="flex items-center justify-between mb-8 px-4">
                                 <div class="flex items-baseline gap-2">
@@ -608,13 +616,11 @@
                     </div>
                 </div>
 
-                <!-- Historial Tab -->
                 <div id="tab-historial" class="tab-content hidden p-10 sm:p-16 flex-1 overflow-y-auto">
                     <h3 class="text-2xl font-black tracking-tight mb-10"><i class="fas fa-history text-indigo-500 mr-3"></i>Historial de Emisiones</h3>
                     <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
                 </div>
 
-                <!-- Catálogo Tab -->
                 <div id="tab-datos" class="tab-content hidden p-10 sm:p-16 flex-1 overflow-y-auto">
                     <h3 class="text-2xl font-black tracking-tight mb-10"><i class="fas fa-list-ul text-indigo-500 mr-3"></i>Catálogo de Servicios</h3>
                     <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
