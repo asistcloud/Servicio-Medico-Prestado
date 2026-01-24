@@ -8,14 +8,24 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <!-- Librerías para PDF -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.delegate.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     
     <script>
         const API_URL = 'https://script.google.com/macros/s/AKfycbxiXMFXYNxQQrXF9uD2U4kH7441WzCR5dqn-FHnOZOamkmOtdqScd6Vak4Q5txPlkwl/exec';
         let SESSION_TOKEN = ''; 
-        
         let emitters = [], recipients = [], patients = [], services = [], savedReceipts = [];
         let receiptItems = [], nextReceiptNumber = 1, editingReceiptId = null;
+
+        // FUNCIÓN CRÍTICA: Normaliza las llaves de un objeto (quita espacios, pone en minúsculas)
+        function normalizeObjectKeys(obj) {
+            const normalized = {};
+            for (let key in obj) {
+                const cleanKey = key.trim().toLowerCase().replace(/\s+/g, '');
+                normalized[cleanKey] = obj[key];
+            }
+            return normalized;
+        }
 
         function checkAccess() {
             const passInput = document.getElementById('login-password').value.trim();
@@ -62,10 +72,19 @@
                     patients = (d.Pacientes || []).map(p => ({
                         ...p,
                         displayName: `${p.nombre || ''} ${p.apellido || ''}`.trim(),
-                        cedula: p.cedula || p.ci || ""
+                        cedula: p.cedula || p.ci || "",
+                        familiar: p.familiar || "" 
                     })).sort((a, b) => a.displayName.localeCompare(b.displayName));
                     
-                    services = d.Servicios || [];
+                    // NORMALIZAMOS LOS SERVICIOS AL CARGARLOS
+                    services = (d.Servicios || []).map(s => {
+                        const norm = normalizeObjectKeys(s);
+                        return {
+                            ...s, // Mantenemos originales por si acaso
+                            _norm: norm // Guardamos versión normalizada para acceso fácil
+                        };
+                    });
+
                     savedReceipts = d.RecibosGuardados || [];
                     const config = d.Configuracion || [];
                     const corr = config.find(c => (c.clave || '').toLowerCase() === 'correlativo');
@@ -88,6 +107,17 @@
             }
         }
 
+        function formatShortDateTime(isoString) {
+            if (!isoString) return "N/D";
+            const date = new Date(isoString);
+            const d = String(date.getDate()).padStart(2, '0');
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const y = String(date.getFullYear()).slice(-2);
+            const hh = String(date.getHours()).padStart(2, '0');
+            const mm = String(date.getMinutes()).padStart(2, '0');
+            return `${d}-${m}-${y} ${hh}:${mm}`;
+        }
+
         async function processReceipt() {
             if (receiptItems.length === 0) return showMessage("El recibo está vacío.", true);
             const emisorSelect = document.getElementById('emitter-select').value;
@@ -99,10 +129,11 @@
 
             if (!emisor || !receptor) return showMessage("Seleccione emisor y receptor.", true);
 
+            const receiptId = editingReceiptId || 'REC-' + Date.now();
             const payload = {
-                id: editingReceiptId || 'REC-' + Date.now(),
+                id: receiptId,
                 fecha_creacion: new Date().toISOString(),
-                fecharecibo: document.getElementById('issue-date').value.split('-').reverse().join('/'),
+                fecharecibo: document.getElementById('issue-date').value, 
                 numerorecibo: editingReceiptId ? savedReceipts.find(r => r.id === editingReceiptId).numerorecibo : 
                              ((emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true") ? nextReceiptNumber.toString().padStart(5, '0') : "S/N"),
                 nombreemisor: emisor.nombre,
@@ -113,117 +144,160 @@
             };
 
             try {
-                showMessage("Guardando en la nube...");
+                showMessage("Guardando y generando PDF...");
                 await fetch(`${API_URL}?token=${encodeURIComponent(SESSION_TOKEN)}`, {
                     method: 'POST',
                     mode: 'no-cors',
                     body: JSON.stringify({ action: editingReceiptId ? 'update' : 'create', collection: 'RecibosGuardados', payload })
                 });
 
-                setTimeout(() => {
+                setTimeout(async () => {
+                    downloadPDF(null, payload); 
                     cancelEdit();
-                    fetchAllData();
+                    await fetchAllData();
                     showMessage("Recibo guardado con éxito.");
-                }, 1500);
-            } catch (e) { showMessage("Error al guardar.", true); }
+                }, 1000);
+            } catch (e) { showMessage("Error al procesar.", true); }
         }
 
-        function downloadPDF(id) {
-            const receipt = savedReceipts.find(r => r.id === id);
+        function downloadPDF(id, directData = null) {
+            const receipt = directData || savedReceipts.find(r => r.id === id);
             if (!receipt) return;
             const data = JSON.parse(receipt.jsoncompleto);
-            const { emisor, receptor, items, totalUSD } = data;
+            const { emisor, receptor, items, totalUSD, rate } = data;
 
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
+            const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
+            const marginX = 15;
+            const pageWidth = doc.internal.pageSize.getWidth();
+            let currentY = 20;
 
-            // --- MEMBRETE (Centrado) ---
+            const fRaw = receipt.fecharecibo || "";
+            let fFinal = "";
+            if (fRaw) {
+                const parts = fRaw.split('T')[0].split('-');
+                if (parts.length === 3) {
+                    fFinal = parts[2] + "/" + parts[1] + "/" + parts[0];
+                } else fFinal = fRaw;
+            }
+
             doc.setFont("helvetica", "bold");
-            doc.setFontSize(12);
-            doc.text(emisor.nombre.toUpperCase(), 105, 20, { align: "center" });
-            
+            doc.setFontSize(13);
+            doc.text(emisor.nombre.toUpperCase(), pageWidth / 2, currentY, { align: "center" });
+            currentY += 5;
             doc.setFontSize(9);
-            doc.text(emisor.especialidad ? emisor.especialidad.toUpperCase() : "MÉDICO", 105, 25, { align: "center" });
-            doc.text(emisor.rif ? emisor.rif.toUpperCase() : "", 105, 30, { align: "center" });
+            doc.text((emisor.especialidad || emisor.descripcion || "MÉDICO").toUpperCase(), pageWidth / 2, currentY, { align: "center" });
+            if (emisor.rif) {
+                currentY += 5;
+                doc.text(emisor.rif.toUpperCase(), pageWidth / 2, currentY, { align: "center" });
+            }
 
-            // --- BLOQUE CLIENTE (Izquierda) ---
-            doc.setFontSize(10);
-            doc.text("CLIENTE:", 20, 45);
+            currentY += 10;
+            doc.setFillColor(248, 250, 252);
+            doc.roundedRect(marginX, currentY, pageWidth - (marginX * 2), 28, 3, 3, 'F');
             doc.setFont("helvetica", "normal");
-            doc.text(receptor.nombre.toUpperCase(), 20, 50);
             doc.setFontSize(8);
-            const direccionLines = doc.splitTextToSize(`DIRECCIÓN: ${receptor.direccion || 'N/A'}`, 90);
-            doc.text(direccionLines, 20, 55);
-            doc.text(`TELÉFONO: ${receptor.telefono || 'N/A'}`, 20, 62);
-
-            // --- BLOQUE METADATOS (Derecha) ---
-            doc.setFont("helvetica", "bold");
-            doc.setFontSize(9);
-            doc.text(`FECHA DE EMISIÓN: ${receipt.fecharecibo}`, 140, 50);
-            doc.text(`ID: ${receptor.rif || 'N/A'}`, 140, 65);
-            doc.setFontSize(11);
-            doc.text(`RECIBO NRO: ${receipt.numerorecibo}`, 140, 72);
-
-            // --- TÍTULO SECCIÓN ---
+            doc.setTextColor(100, 116, 139);
+            
+            doc.text("CLIENTE:", marginX + 5, currentY + 7);
+            
+            doc.setTextColor(0, 0, 0);
             doc.setFontSize(10);
-            doc.text("RELACIÓN SERVICIOS MÉDICOS", 105, 82, { align: "center" });
+            doc.text(receptor.nombre.toUpperCase(), marginX + 5, currentY + 13);
+            doc.setFontSize(8);
+            const dir = doc.splitTextToSize(`DIRECCIÓN: ${receptor.direccion || 'N/A'}`, pageWidth - marginX * 2 - 10);
+            doc.text(dir, marginX + 5, currentY + 18);
+            doc.text(`TELÉFONO: ${receptor.telefono || 'N/A'}  |  ID / RIF: ${receptor.rif || 'N/A'}`, marginX + 5, currentY + 23);
 
-            // --- TABLA RECALIBRADA (Total ancho ~180mm para dejar márgenes) ---
-            const tableData = items.map((item, index) => [
-                index + 1,
-                item.date,
-                `${item.beneficiario}\nCI: ${item.cedula || 'N/A'}\n(${item.paciente_original || 'Paciente'})`,
-                item.descripcion,
-                item.quantity,
-                `${(item.precioTotalLinea / item.quantity).toFixed(2)} $`,
-                `$${item.precioTotalLinea.toFixed(2)}`
-            ]);
+            currentY += 38;
+            doc.setFontSize(10);
+            doc.setFont("helvetica", "bold");
+            doc.setTextColor(79, 70, 229);
+            doc.text("RELACIÓN SERVICIOS MÉDICOS", pageWidth / 2, currentY, { align: "center" });
+
+            currentY += 8;
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(8);
+            doc.setFont("helvetica", "normal");
+            doc.text(`FECHA DE EMISIÓN: ${fFinal}`, marginX, currentY);
+            doc.setFont("helvetica", "bold");
+            doc.text(`RECIBO NRO: ${receipt.numerorecibo}`, pageWidth - marginX, currentY, { align: "right" });
+
+            const tableData = items.map((item, index) => {
+                const puValue = parseFloat(item.precioUnitario) || 0;
+                const qty = item.quantity;
+                const totalLinea = parseFloat(item.precioTotalLinea) || 0;
+                
+                let pacInfo = `${item.beneficiario} CI: ${item.cedula || 'N/A'}`;
+                if (item.familiar && item.familiar.trim() !== "") {
+                    pacInfo += `\n(${item.familiar.trim()})`;
+                }
+                return [
+                    index + 1, 
+                    item.date, 
+                    pacInfo, 
+                    item.descripcion, 
+                    qty, 
+                    `${puValue.toLocaleString('en-US', {minimumFractionDigits: 2})} $`, 
+                    `${totalLinea.toLocaleString('en-US', {minimumFractionDigits: 2})} $`
+                ];
+            });
 
             doc.autoTable({
-                startY: 88,
-                margin: { left: 15, right: 15 },
-                head: [['#', 'FECHA SERV.', 'NOMBRES CI/PACIENTE', 'SERVICIO', 'CANT', 'P/U', 'TOTAL']],
+                startY: currentY + 4,
+                margin: { left: marginX, right: marginX },
+                head: [['#', 'FECHA SERV.', 'NOMBRES CI / PACIENTE', 'SERVICIO', 'CANT', 'P/U', 'TOTAL']],
                 body: tableData,
                 theme: 'grid',
-                headStyles: { 
-                    fillColor: [255, 255, 255], 
-                    textColor: [0, 0, 0], 
-                    fontStyle: 'bold', 
-                    lineWidth: 0.1,
-                    lineColor: [200, 200, 200]
-                },
-                styles: { 
-                    fontSize: 7.5, // Reducido ligeramente para mayor ajuste
-                    cellPadding: 2.5,
-                    valign: 'middle',
-                    overflow: 'linebreak'
-                },
+                headStyles: { fillColor: [79, 70, 229], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
+                styles: { fontSize: 7.5, cellPadding: 3, valign: 'middle', lineColor: [226, 232, 240] },
                 columnStyles: { 
-                    0: { cellWidth: 8 },
-                    1: { cellWidth: 22 },
-                    2: { cellWidth: 50 },
-                    3: { cellWidth: 45 },
-                    4: { cellWidth: 12, halign: 'center' },
-                    5: { cellWidth: 20, halign: 'right' },
-                    6: { cellWidth: 23, halign: 'right' }
+                    0: { cellWidth: 8, halign: 'center' }, 
+                    1: { cellWidth: 20, halign: 'center' }, 
+                    2: { cellWidth: 55 }, 
+                    4: { cellWidth: 14, halign: 'center' },
+                    5: { cellWidth: 18, halign: 'right' }, 
+                    6: { cellWidth: 20, halign: 'right' } 
                 }
             });
 
-            // --- TOTAL FINAL ---
-            const finalY = doc.lastAutoTable.finalY + 10;
+            let finalY = doc.lastAutoTable.finalY + 8;
             doc.setFont("helvetica", "bold");
             doc.setFontSize(10);
-            // Alineado al final de la tabla (margen derecho 15mm => 195mm)
-            doc.text(`TOTAL USD: $${totalUSD.toFixed(2)}`, 195, finalY, { align: "right" });
-
-            doc.save(`Recibo-${receipt.numerorecibo}-${receptor.nombre}.pdf`);
+            doc.text(`TOTAL USD: $ ${totalUSD.toLocaleString('en-US', {minimumFractionDigits: 2})}`, pageWidth - marginX, finalY, { align: "right" });
+            if (rate > 0) {
+                finalY += 6;
+                doc.text(`TOTAL BS (Tasa ${rate.toFixed(4)}): ${(totalUSD * rate).toLocaleString('es-VE', {minimumFractionDigits:2})} Bs.`, pageWidth - marginX, finalY, { align: "right" });
+            }
+            
+            const cleanRecipientName = receptor.nombre.replace(/[/\\?%*:|"<>]/g, '').trim();
+            const fileName = `Recibo-${receipt.numerorecibo}-${cleanRecipientName}.pdf`;
+            doc.save(fileName);
         }
 
-        function switchTab(tab) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.getElementById(`tab-${tab}`).classList.remove('hidden');
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('bg-indigo-600', 'text-white'));
-            document.getElementById(`btn-${tab}`).classList.add('bg-indigo-600', 'text-white');
+        // FUNCIÓN MEJORADA: Busca el valor en el objeto normalizado
+        function getNormValue(service, keys) {
+            if (!service || !service._norm) return null;
+            for (let k of keys) {
+                const cleanK = k.toLowerCase().replace(/\s+/g, '');
+                if (service._norm[cleanK] !== undefined && service._norm[cleanK] !== null && service._norm[cleanK] !== "") {
+                    return service._norm[cleanK];
+                }
+            }
+            return null;
+        }
+
+        function handleServiceChange() {
+            const sId = document.getElementById('service-select').value;
+            const service = services.find(s => String(s.id) === String(sId));
+            const qtyInput = document.getElementById('service-qty');
+            if (service) {
+                // Buscamos cantidadDefecto usando el buscador normalizado
+                const qtyVal = getNormValue(service, ['cantidadDefecto', 'cantidad_defecto', 'cantidad']) || 1;
+                qtyInput.value = qtyVal;
+            } else {
+                qtyInput.value = "";
+            }
         }
 
         function updateReceiptNumberDisplay() {
@@ -231,22 +305,11 @@
             const emisor = emitters.find(e => String(e.id) === String(eId));
             const display = document.getElementById('receipt-number-display');
             if (editingReceiptId) {
-                display.textContent = savedReceipts.find(r => r.id === editingReceiptId).numerorecibo;
+                const r = savedReceipts.find(r => r.id === editingReceiptId);
+                display.textContent = r ? r.numerorecibo : "00000";
             } else {
                 display.textContent = (emisor && (emisor.usarcorrelativo === true || emisor.usarcorrelativo === "true")) ? nextReceiptNumber.toString().padStart(5, '0') : "S/N";
             }
-        }
-
-        function updateDropdowns() {
-            const fill = (id, list, key) => {
-                const el = document.getElementById(id);
-                if (!el) return;
-                el.innerHTML = `<option value="">Seleccionar...</option>` + list.map(i => `<option value="${i.id}">${i[key] || i.nombre || i.descripcion}</option>`).join('');
-            };
-            fill('emitter-select', emitters, 'nombre');
-            fill('recipient-select', recipients, 'nombre');
-            fill('service-select', services, 'descripcion');
-            document.getElementById('patients-list').innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
         }
 
         function addServiceToReceipt(e) {
@@ -254,25 +317,37 @@
             const sId = document.getElementById('service-select').value;
             const pSearch = document.getElementById('patient-search').value;
             const date = document.getElementById('service-date').value;
-            const qty = parseInt(document.getElementById('service-qty').value) || 1;
+            
             const service = services.find(s => String(s.id) === String(sId));
             const patient = patients.find(p => p.displayName === pSearch);
             
-            if (!service || !patient || !date) return showMessage("Faltan datos obligatorios.", true);
+            if (!service || !patient || !date) return showMessage("Faltan datos por completar.", true);
             
+            // MAPEO USANDO NORMALIZACIÓN
+            const currentQty = parseInt(getNormValue(service, ['cantidadDefecto', 'cantidad_defecto', 'cantidad']) || 1);
+            const valorPUTabla = parseFloat(getNormValue(service, ['preciounitario', 'pu', 'p/u']) || 0);
+            const valorTotalTabla = parseFloat(getNormValue(service, ['precio', 'total', 'preciototal']) || 0);
+
             receiptItems.push({
                 ...service,
                 beneficiario: patient.displayName,
                 cedula: patient.cedula,
-                paciente_original: patient.nombre + " " + (patient.apellido || ""),
+                familiar: patient.familiar,
                 date: date.split('-').reverse().join('/'),
                 dateISO: date,
-                quantity: qty,
-                precioTotalLinea: (parseFloat(service.precio) || 0) * qty,
+                quantity: currentQty,
+                precioUnitario: valorPUTabla,
+                precioTotalLinea: valorTotalTabla,
                 tempId: Date.now() + Math.random()
             });
+
             receiptItems.sort((a,b) => new Date(a.dateISO) - new Date(b.dateISO));
             renderReceiptItems();
+
+            document.getElementById('patient-search').value = "";
+            document.getElementById('service-select').value = "";
+            document.getElementById('service-qty').value = "";
+            showMessage("Servicio cargado con éxito.");
         }
 
         function renderReceiptItems() {
@@ -280,10 +355,25 @@
             let total = 0;
             list.innerHTML = receiptItems.map(item => {
                 total += item.precioTotalLinea;
+                const displayQty = item.quantity;
+                const displayPU = item.precioUnitario;
+
                 return `<li class="bg-white p-4 rounded-2xl mb-3 flex justify-between items-center text-xs shadow-sm border border-slate-100 animate-fadeIn">
-                    <div><b class="text-slate-800">${item.date}</b> - ${item.descripcion}<br><span class="text-slate-400 font-medium">${item.beneficiario} (CI: ${item.cedula})</span></div>
+                    <div class="flex items-center gap-3">
+                        <div class="h-8 w-8 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-500">
+                            <i class="fas fa-hand-holding-medical text-xs"></i>
+                        </div>
+                        <div>
+                            <b class="text-slate-800 font-bold">${item.date}</b> - ${item.descripcion}<br>
+                            <span class="text-slate-400 font-bold uppercase tracking-tighter">
+                                Cant: <span class="text-indigo-600">${displayQty}</span> | 
+                                P/U: <span class="text-indigo-600">$${displayPU.toFixed(2)}</span> | 
+                                Paciente: ${item.beneficiario}
+                            </span>
+                        </div>
+                    </div>
                     <div class="flex items-center gap-4">
-                        <div class="text-right font-bold text-indigo-600">$${item.precioTotalLinea.toFixed(2)}</div>
+                        <div class="text-right font-black text-indigo-600 text-sm">$${item.precioTotalLinea.toFixed(2)}</div>
                         <button onclick="removeItem(${item.tempId})" class="text-rose-400 hover:text-rose-600"><i class="fas fa-times-circle text-lg"></i></button>
                     </div></li>`;
             }).join('');
@@ -303,12 +393,12 @@
                         <div class="h-10 w-10 bg-slate-50 rounded-full flex items-center justify-center text-slate-400"><i class="fas fa-file-invoice-dollar"></i></div>
                         <div>
                             <b class="text-sm text-slate-800">Recibo ${r.numerorecibo}</b>
-                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${r.fecharecibo} - ${r.nombrereceptor}</div>
+                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${formatShortDateTime(r.fecha_creacion)} - ${r.nombrereceptor}</div>
                         </div>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick='downloadPDF("${r.id}")' class="h-9 w-9 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center hover:bg-emerald-100" title="Descargar PDF"><i class="fas fa-file-pdf"></i></button>
-                        <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-9 w-9 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-100" title="Editar"><i class="fas fa-edit"></i></button>
+                        <button onclick='downloadPDF("${r.id}")' class="h-9 w-9 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center hover:bg-emerald-100"><i class="fas fa-file-pdf"></i></button>
+                        <button onclick='loadReceiptForEdit(${JSON.stringify(r)})' class="h-9 w-9 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center hover:bg-indigo-100"><i class="fas fa-edit"></i></button>
                     </div>
                 </div>`).join('');
         }
@@ -318,6 +408,7 @@
             document.getElementById('emitter-select').value = emitters.find(e => e.nombre === r.nombreemisor)?.id || "";
             document.getElementById('recipient-select').value = recipients.find(rec => rec.nombre === r.nombrereceptor)?.id || "";
             document.getElementById('bcv-rate').value = data.rate || "";
+            document.getElementById('issue-date').value = r.fecharecibo;
             receiptItems = data.items.map(i => ({ ...i, tempId: Date.now() + Math.random() }));
             editingReceiptId = r.id;
             document.getElementById('receipt-action-title').textContent = "Editando Recibo";
@@ -331,11 +422,49 @@
             document.getElementById('receipt-action-title').textContent = "Nuevo Recibo";
             document.getElementById('cancel-edit-btn').classList.add('hidden');
             renderReceiptItems();
+            updateReceiptNumberDisplay();
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('bg-indigo-600', 'text-white'));
+            document.getElementById(`btn-${tab}`).classList.add('bg-indigo-600', 'text-white');
+        }
+
+        function updateDropdowns() {
+            const fill = (id, list, key) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.innerHTML = `<option value="">Seleccionar...</option>` + list.map(i => `<option value="${i.id}">${i[key] || i.nombre || i.descripcion}</option>`).join('');
+            };
+            fill('emitter-select', emitters, 'nombre');
+            fill('recipient-select', recipients, 'nombre');
+            fill('service-select', services, 'descripcion');
+            document.getElementById('patients-list').innerHTML = patients.map(p => `<option value="${p.displayName}">`).join('');
         }
 
         function renderManagementLists() {
             const container = document.getElementById('list-s');
-            container.innerHTML = services.map(s => `<div class="p-4 flex justify-between bg-white mb-2 rounded-2xl border border-slate-50 shadow-sm"><span class="text-xs font-bold text-slate-700">${s.descripcion}</span><span class="text-indigo-600 font-black text-xs">$${parseFloat(s.precio).toFixed(2)}</span></div>`).join('');
+            container.innerHTML = services.map(s => {
+                const total = parseFloat(getNormValue(s, ['precio', 'total']) || 0);
+                const qty = getNormValue(s, ['cantidadDefecto', 'cantidad']) || 1;
+                // CAMBIO SOLICITADO ANTERIORMENTE: uds -> serv
+                // AÑADIDO: Icono de servicio médico
+                return `
+                <div class="p-5 flex justify-between items-center bg-white mb-2 rounded-[2rem] border border-slate-100 shadow-sm hover:border-indigo-100 transition-all">
+                    <div class="flex items-center gap-4">
+                        <div class="h-10 w-10 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center">
+                            <i class="fas fa-notes-medical"></i>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-slate-800 block">${s.descripcion}</span>
+                            <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${qty} serv / base</span>
+                        </div>
+                    </div>
+                    <span class="text-indigo-600 font-black text-sm">$${total.toFixed(2)}</span>
+                </div>`;
+            }).join('');
         }
 
         window.onload = () => { 
@@ -344,11 +473,12 @@
             document.getElementById('service-date').valueAsDate = new Date(); 
             document.getElementById('issue-date').valueAsDate = new Date(); 
             document.getElementById('emitter-select').addEventListener('change', updateReceiptNumberDisplay);
+            document.getElementById('service-select').addEventListener('change', handleServiceChange);
         };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; overflow-x: hidden; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
         .loader-dot { animation: dotPulse 1.5s infinite ease-in-out; }
         @keyframes dotPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
         .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
@@ -356,28 +486,31 @@
     </style>
 </head>
 <body class="p-4 sm:p-6 min-h-screen text-slate-800">
-
+    <!-- Login Screen -->
     <div id="login-screen" class="fixed inset-0 bg-slate-50 z-[300] flex items-center justify-center p-6">
         <div class="max-w-md w-full bg-white p-10 rounded-[3.5rem] shadow-2xl border border-slate-100 text-center">
             <div class="h-20 w-20 bg-indigo-600 rounded-[2rem] flex items-center justify-center text-white text-3xl mx-auto mb-8 shadow-2xl shadow-indigo-200"><i class="fas fa-fingerprint"></i></div>
-            <h2 class="text-3xl font-black text-slate-900 mb-2 tracking-tight uppercase">MedCloud Pro</h2>
-            <p class="text-slate-400 text-sm font-semibold mb-10 tracking-wide">INGRESE SU CLAVE DE SEGURIDAD</p>
-            <input type="password" id="login-password" placeholder="••••••••" class="w-full p-6 rounded-3xl bg-slate-50 border border-slate-100 mb-6 text-center text-2xl font-bold outline-none focus:ring-4 focus:ring-indigo-500/10">
-            <button onclick="checkAccess()" class="w-full bg-indigo-600 text-white py-6 rounded-full font-black shadow-xl hover:bg-indigo-700 transition-all uppercase tracking-widest text-sm">Validar Credencial</button>
+            <h2 class="text-3xl font-black text-slate-900 mb-2 uppercase">MedCloud Pro</h2>
+            <p class="text-slate-400 text-sm font-semibold mb-10 tracking-widest uppercase">Seguridad Acceso</p>
+            <input type="password" id="login-password" placeholder="••••••••" class="w-full p-6 rounded-3xl bg-slate-50 border border-slate-100 mb-6 text-center text-2xl font-bold outline-none">
+            <button onclick="checkAccess()" class="w-full bg-indigo-600 text-white py-6 rounded-full font-black uppercase tracking-widest text-sm shadow-xl">Ingresar</button>
+            <p id="login-error" class="hidden text-rose-500 text-xs mt-6 font-bold uppercase tracking-widest">Token Inválido</p>
         </div>
     </div>
 
+    <!-- Main App -->
     <div id="main-app" class="hidden">
         <div id="global-loader" class="fixed inset-0 bg-slate-900/10 backdrop-blur-sm z-[200] flex items-center justify-center hidden">
             <div class="bg-white p-8 rounded-[3rem] shadow-2xl flex items-center gap-6">
                 <div class="flex gap-1.5"><div class="w-3 h-3 bg-indigo-600 rounded-full loader-dot"></div><div class="w-3 h-3 bg-indigo-600 rounded-full loader-dot" style="animation-delay: 0.2s"></div><div class="w-3 h-3 bg-indigo-600 rounded-full loader-dot" style="animation-delay: 0.4s"></div></div>
-                <span class="text-xs font-black uppercase tracking-[0.2em] text-slate-600">Sincronizando...</span>
+                <span class="text-xs font-black uppercase tracking-widest text-slate-600">Procesando...</span>
             </div>
         </div>
 
         <div id="message-container" class="opacity-0 pointer-events-none transition-all duration-300 fixed top-6 right-6 z-[100]"></div>
         
         <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <!-- Sidebar -->
             <div class="lg:col-span-3 space-y-6">
                 <div class="bg-white p-8 rounded-[3rem] shadow-sm border border-white">
                     <div class="flex items-center justify-between mb-12">
@@ -385,57 +518,58 @@
                             <div class="h-12 w-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white"><i class="fas fa-stethoscope text-xl"></i></div>
                             <div>
                                 <h1 class="text-lg font-black tracking-tighter text-slate-900 leading-none">MEDCLOUD</h1>
-                                <span class="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">V 2.5 Pro</span>
+                                <span class="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">v2.5 Pro</span>
                             </div>
                         </div>
-                        <button onclick="logout()" class="text-slate-300 hover:text-rose-500"><i class="fas fa-power-off text-lg"></i></button>
+                        <button onclick="logout()" class="text-slate-300 hover:text-rose-500 transition-colors"><i class="fas fa-power-off text-lg"></i></button>
                     </div>
                     <nav class="space-y-2">
-                        <button id="btn-recibos" onclick="switchTab('recibos')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold bg-indigo-600 text-white flex items-center gap-4"><i class="fas fa-plus-circle"></i> <span id="receipt-action-title">Nuevo Recibo</span></button>
-                        <button id="btn-historial" onclick="switchTab('historial')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold text-slate-400 flex items-center gap-4 hover:bg-slate-50"><i class="fas fa-folder-open"></i> Historial</button>
-                        <button id="btn-datos" onclick="switchTab('datos')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold text-slate-400 flex items-center gap-4 hover:bg-slate-50"><i class="fas fa-book-medical"></i> Catálogo</button>
+                        <button id="btn-recibos" onclick="switchTab('recibos')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold bg-indigo-600 text-white flex items-center gap-4 transition-all duration-300"><i class="fas fa-plus-circle"></i> <span id="receipt-action-title">Nuevo Recibo</span></button>
+                        <button id="btn-historial" onclick="switchTab('historial')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold text-slate-400 flex items-center gap-4 hover:bg-slate-50 transition-all duration-300"><i class="fas fa-folder-open"></i> Historial</button>
+                        <button id="btn-datos" onclick="switchTab('datos')" class="tab-btn w-full p-5 rounded-3xl text-left text-sm font-extrabold text-slate-400 flex items-center gap-4 hover:bg-slate-50 transition-all duration-300"><i class="fas fa-book-medical"></i> Catálogo</button>
                     </nav>
-                    <button id="cancel-edit-btn" onclick="cancelEdit()" class="hidden w-full mt-8 p-4 rounded-3xl text-left text-xs font-black bg-rose-50 text-rose-500 border border-rose-100 flex items-center gap-3 uppercase tracking-wider justify-center"><i class="fas fa-times-circle"></i> Cancelar</button>
+                    <button id="cancel-edit-btn" onclick="cancelEdit()" class="hidden w-full mt-8 p-4 rounded-3xl text-left text-xs font-black bg-rose-50 text-rose-500 border border-rose-100 flex items-center gap-3 uppercase tracking-wider justify-center"><i class="fas fa-times-circle"></i> Cancelar Edición</button>
                 </div>
                 
-                <div class="bg-slate-900 p-8 rounded-[3rem] text-white shadow-2xl relative overflow-hidden group">
-                    <div class="relative z-10">
-                        <label class="text-[10px] font-black text-indigo-300 block mb-4 uppercase tracking-[0.2em]">Tasa Cambiaria (BCV)</label>
-                        <div class="flex items-center">
-                            <span class="text-2xl font-bold text-slate-500 mr-2">Bs.</span>
-                            <input type="number" id="bcv-rate" step="any" oninput="renderReceiptItems()" placeholder="0.00" class="w-full bg-transparent p-0 text-emerald-400 font-black text-4xl outline-none focus:ring-0">
-                        </div>
+                <div class="bg-slate-900 p-8 rounded-[3rem] text-white shadow-2xl relative overflow-hidden">
+                    <label class="text-[10px] font-black text-indigo-300 block mb-4 uppercase tracking-[0.2em]">Tasa Cambiaria (BCV)</label>
+                    <div class="flex items-center">
+                        <span class="text-2xl font-bold text-slate-500 mr-2">Bs.</span>
+                        <input type="number" id="bcv-rate" step="any" oninput="renderReceiptItems()" placeholder="0.00" class="w-full bg-transparent p-0 text-emerald-400 font-black text-4xl outline-none focus:ring-0">
                     </div>
                 </div>
                 
                 <div class="bg-white p-6 rounded-[2.5rem] text-center border border-white shadow-sm">
-                    <div class="text-[9px] font-black text-slate-300 uppercase tracking-[0.3em] mb-2">Control Correlativo</div>
+                    <div class="text-[9px] font-black text-slate-300 uppercase tracking-[0.3em] mb-2">Correlativo Digital</div>
                     <div class="text-4xl font-black text-slate-900 tracking-tighter" id="receipt-number-display">00000</div>
                 </div>
             </div>
 
+            <!-- Main Content Area -->
             <div class="lg:col-span-9 bg-white rounded-[3.5rem] shadow-sm border border-white min-h-[85vh] flex flex-col overflow-hidden">
-                <div id="tab-recibos" class="tab-content p-6 sm:p-12 space-y-12 flex-1">
+                <div id="tab-recibos" class="tab-content p-6 sm:p-12 space-y-12 flex-1 overflow-y-auto">
+                    <!-- Receipt Header -->
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
                         <div class="space-y-3">
-                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Emisor Responsable</label>
+                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Emisor</label>
                             <select id="emitter-select" class="w-full p-5 bg-slate-50 border border-slate-50 rounded-3xl text-sm font-bold outline-none"></select>
                         </div>
                         <div class="space-y-3">
-                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Empresa / Receptor</label>
+                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Receptor / Empresa</label>
                             <select id="recipient-select" class="w-full p-5 bg-slate-50 border border-slate-50 rounded-3xl text-sm font-bold outline-none"></select>
                         </div>
                         <div class="space-y-3">
-                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Fecha de Emisión</label>
-                            <input type="date" id="issue-date" class="w-full p-5 bg-slate-50 border border-slate-100 rounded-3xl text-sm font-bold outline-none">
+                            <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Fecha Emisión</label>
+                            <input type="date" id="issue-date" class="w-full p-5 bg-slate-50 border border-slate-50 rounded-3xl text-sm font-bold outline-none">
                         </div>
                     </div>
 
                     <div class="grid grid-cols-1 lg:grid-cols-12 gap-12">
+                        <!-- Service Form -->
                         <div class="lg:col-span-5 bg-indigo-50/30 p-10 rounded-[3.5rem] space-y-6 border border-indigo-100/30">
                             <div class="space-y-3">
-                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Nombre del Paciente</label>
-                                <input type="text" id="patient-search" list="patients-list" placeholder="Buscar..." class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none">
+                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Paciente</label>
+                                <input type="text" id="patient-search" list="patients-list" placeholder="Buscar paciente..." class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none">
                                 <datalist id="patients-list"></datalist>
                             </div>
                             <div class="flex gap-4">
@@ -444,17 +578,18 @@
                                     <input type="date" id="service-date" class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-xs font-bold outline-none">
                                 </div>
                                 <div class="w-24 space-y-3">
-                                    <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest text-center block">Qtd.</label>
-                                    <input type="number" id="service-qty" value="1" min="1" class="w-full p-5 rounded-3xl bg-white border border-indigo-100 font-black text-center text-sm text-indigo-600 outline-none">
+                                    <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest text-center block">Cant. (Fija)</label>
+                                    <input type="number" id="service-qty" readonly class="w-full p-5 rounded-3xl bg-slate-200 border border-indigo-100 font-black text-center text-sm text-slate-500 outline-none cursor-not-allowed">
                                 </div>
                             </div>
                             <div class="space-y-3">
-                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Servicio</label>
+                                <label class="text-[10px] font-black text-indigo-400 uppercase tracking-widest ml-4">Servicio (desde Tabla)</label>
                                 <select id="service-select" class="w-full p-5 rounded-3xl bg-white border border-indigo-100 text-sm font-bold outline-none"></select>
                             </div>
-                            <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-6 rounded-full font-black text-[10px] uppercase tracking-[0.2em]">Agregar Servicio</button>
+                            <button onclick="addServiceToReceipt(event)" class="w-full bg-slate-900 text-white p-6 rounded-full font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg"><i class="fas fa-cart-plus mr-2"></i> Agregar a la lista</button>
                         </div>
 
+                        <!-- Items List -->
                         <div class="lg:col-span-7 flex flex-col">
                             <div class="flex items-center justify-between mb-8 px-4">
                                 <div class="flex items-baseline gap-2">
@@ -465,21 +600,23 @@
                                     Bs. <span id="total-bs">0,00</span>
                                 </div>
                             </div>
-                            <div class="flex-1 min-h-[320px] bg-slate-50/50 rounded-[3rem] p-8 mb-10 border border-slate-100 overflow-y-auto">
+                            <div class="flex-1 min-h-[300px] bg-slate-50/50 rounded-[3rem] p-8 mb-10 border border-slate-100 overflow-y-auto">
                                 <ul id="receipt-items-list" class="space-y-4"></ul>
                             </div>
-                            <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-7 rounded-full font-black shadow-2xl hover:bg-indigo-700 transition-all uppercase tracking-[0.3em] text-xs">Guardar y Finalizar</button>
+                            <button onclick="processReceipt()" class="w-full bg-indigo-600 text-white py-7 rounded-full font-black shadow-2xl hover:bg-indigo-700 transition-all uppercase tracking-[0.3em] text-xs"><i class="fas fa-save mr-2"></i> Guardar y Finalizar</button>
                         </div>
                     </div>
                 </div>
 
+                <!-- Historial Tab -->
                 <div id="tab-historial" class="tab-content hidden p-10 sm:p-16 flex-1 overflow-y-auto">
-                    <h3 class="text-2xl font-black tracking-tight mb-10">Historial de Recibos</h3>
+                    <h3 class="text-2xl font-black tracking-tight mb-10"><i class="fas fa-history text-indigo-500 mr-3"></i>Historial de Emisiones</h3>
                     <div id="history-list" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
                 </div>
 
+                <!-- Catálogo Tab -->
                 <div id="tab-datos" class="tab-content hidden p-10 sm:p-16 flex-1 overflow-y-auto">
-                    <h3 class="text-2xl font-black tracking-tight mb-10">Catálogo Médico</h3>
+                    <h3 class="text-2xl font-black tracking-tight mb-10"><i class="fas fa-list-ul text-indigo-500 mr-3"></i>Catálogo de Servicios</h3>
                     <div id="list-s" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
                 </div>
             </div>
