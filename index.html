@@ -393,7 +393,7 @@
 
             let finalY = doc.lastAutoTable.finalY + 10;
             const boxWidth = 70;
-            const boxHeight = (rate > 0) ? 22 : 12;
+            const boxHeight = (rate > 0) ? 24 : 14;
             const boxX = pageWidth - marginX - boxWidth;
 
             // Info Bancaria
@@ -412,28 +412,36 @@
             const msgValidez = isPresupuesto ? "" : "Gracias por su confianza.";
             if (msgValidez) doc.text(msgValidez, marginX, finalY + 16);
 
-            // CAJA DE TOTALES - COLOR LILA MUY ATENUADO
-            doc.setFillColor(243, 232, 255); // Tono Lila extremadamente suave (Tailwind purple-100)
-            doc.roundedRect(boxX, finalY, boxWidth, boxHeight, 3, 3, 'F');
+            // CAJA DE TOTALES - AJUSTADA PARA MAYOR CLARIDAD
+            doc.setFillColor(245, 243, 255); // Fondo lila más claro y limpio
+            doc.setDrawColor(221, 214, 254); // Borde lila suave para definición
+            doc.roundedRect(boxX, finalY, boxWidth, boxHeight, 2, 2, 'FD');
             
-            // Texto dentro de la caja - Color oscuro para contraste
+            // Texto dentro de la caja
             doc.setTextColor(30, 41, 59); // Slate-800
             doc.setFontSize(9);
             doc.setFont("helvetica", "bold");
-            doc.text("TOTAL ESTIMADO:", boxX + 5, finalY + 8);
-            doc.setFontSize(11);
-            doc.text(`$ ${totalUSD.toLocaleString('en-US', {minimumFractionDigits: 2})}`, pageWidth - marginX - 5, finalY + 8, { align: "right" });
+            
+            const labelTotal = isPresupuesto ? "TOTAL:" : "TOTAL:";
+            doc.text(labelTotal, boxX + 6, finalY + 9);
+            
+            doc.setFontSize(12); // Monto ligeramente más grande
+            doc.text(`$ ${totalUSD.toLocaleString('en-US', {minimumFractionDigits: 2})}`, pageWidth - marginX - 6, finalY + 9, { align: "right" });
 
             if (rate > 0) {
-                doc.setDrawColor(255, 255, 255);
-                doc.setLineWidth(0.1);
-                doc.line(boxX + 5, finalY + 11, pageWidth - marginX - 5, finalY + 11);
+                doc.setDrawColor(221, 214, 254);
+                doc.setLineWidth(0.2);
+                doc.line(boxX + 6, finalY + 13, pageWidth - marginX - 6, finalY + 13);
+                
                 doc.setFontSize(7);
-                doc.setTextColor(71, 85, 105); // Slate-600
-                doc.text(`TASA BCV: ${rate.toFixed(4)}`, boxX + 5, finalY + 15);
-                doc.setFontSize(9);
+                doc.setTextColor(100, 116, 139); 
+                doc.setFont("helvetica", "normal");
+                doc.text(`TASA BCV: ${rate.toFixed(4)}`, boxX + 6, finalY + 17);
+                
+                doc.setFontSize(10);
+                doc.setFont("helvetica", "bold");
                 doc.setTextColor(30, 41, 59);
-                doc.text(`${(totalUSD * rate).toLocaleString('es-VE', {minimumFractionDigits:2})} Bs.`, pageWidth - marginX - 5, finalY + 19, { align: "right" });
+                doc.text(`${(totalUSD * rate).toLocaleString('es-VE', {minimumFractionDigits:2})} Bs.`, pageWidth - marginX - 6, finalY + 21, { align: "right" });
             }
             
             const fileName = isPresupuesto ? `Presupuesto-${receptor.nombre.slice(0,10)}` : `Recibo-${receipt.numerorecibo}`;
